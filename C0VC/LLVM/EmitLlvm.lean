@@ -53,17 +53,13 @@ def isCmpOp : IR.BinOp → Bool
 def emitArgs (args : List IR.Arg) : String :=
   ", ".intercalate (List.map (λ (tau, varName) => s!"{emitTau tau} %{varName}") args)
 
-def isExternalName (program : IR.Program) (fname : String) : Bool :=
-  program.any (fun fdefn => fdefn.external && fdefn.fname == fname)
+def emitSourceFunctionName (fname : String) : String :=
+  "_c0_" ++ fname
 
-def isRuntimeName (fname : String) : Bool :=
-  Runtime.all.any (fun fn => Runtime.name fn == fname)
-
-def emitFunctionName (program : IR.Program) (fname : String) : String :=
-  if isExternalName program fname || isRuntimeName fname || fname.startsWith "_c0_" then
-    fname
-  else
-    "_c0_" ++ fname
+def emitCalleeName : IR.Callee → String
+  | .source fname => emitSourceFunctionName fname
+  | .external fname => fname
+  | .runtime fname => fname
 
 mutual
 partial def emitFEvals (args : List (IR.Tau × IR.Val)) : String :=
@@ -78,17 +74,17 @@ partial def emitVal : IR.Val → String
   | .bitVec bv => toString (Int32.ofInt (bv.toInt))
 end
 
-def emitExpr (program : IR.Program) : IR.Expr → String
+def emitExpr : IR.Expr → String
   | .binop op tau lhs rhs =>
     s!"{if isCmpOp op then "icmp " else ""}{emitBinOp op} {emitTau tau} {emitVal lhs}, {emitVal rhs}"
-  | .call tau fname args =>
-    s!"call {emitTau tau} @{emitFunctionName program fname}({emitFEvals args})"
+  | .call tau callee args =>
+    s!"call {emitTau tau} @{emitCalleeName callee}({emitFEvals args})"
 
-def emitStm (program : IR.Program) (retTau : IR.Tau) : IR.Stm → String
-  | .assign dest src  => s!"{emitVal dest} = {emitExpr program src}"
+def emitStm (retTau : IR.Tau) : IR.Stm → String
+  | .assign dest src  => s!"{emitVal dest} = {emitExpr src}"
 
-  | .callVoid fname args =>
-    s!"call void @{emitFunctionName program fname}({emitFEvals args})"
+  | .callVoid callee args =>
+    s!"call void @{emitCalleeName callee}({emitFEvals args})"
 
   | .label l =>
     s!"{l.name}:"
@@ -113,8 +109,8 @@ def emitStm (program : IR.Program) (retTau : IR.Tau) : IR.Stm → String
   | .load dest tau ptr =>
     s!"{emitVal dest} = load {emitTau tau}, ptr {emitVal ptr}"
 
-def emitFdefn (program : IR.Program) (fdefn : IR.FunctionDef) : String :=
-  let emitStms := fdefn.stms.map (emitStm program fdefn.tau)
+def emitFdefn (fdefn : IR.FunctionDef) : String :=
+  let emitStms := fdefn.stms.map (emitStm fdefn.tau)
   let markIndent := fdefn.stms.map (fun stm => match stm with | .label _ => false | _ => true)
 
   let formattedEmitStm :=
@@ -123,7 +119,7 @@ def emitFdefn (program : IR.Program) (fdefn : IR.FunctionDef) : String :=
         if indent then "\t" ++ rawEmitStm else rawEmitStm)
       |> String.intercalate "\n"
 
-  let fname' := emitFunctionName program fdefn.fname
+  let fname' := emitSourceFunctionName fdefn.fname
 
   s!"define {emitTau fdefn.tau} "
   ++ s!"@{fname'}({emitArgs fdefn.args}) "
@@ -149,7 +145,7 @@ def externalDecls (program : IR.Program) : String :=
   String.intercalate "\n" ((program.filter (fun fdefn => fdefn.external)).map emitExternalDecl)
 
 def emit (program : IR.Program) (fileName : String): IO Unit :=
-  let rawProgram := "\n\n".intercalate ((program.filter (fun fdefn => not fdefn.external)).map (emitFdefn program))
+  let rawProgram := "\n\n".intercalate ((program.filter (fun fdefn => not fdefn.external)).map emitFdefn)
   let decls := [runtimeDecls, externalDecls program].filter (fun s => not s.isEmpty)
   IO.FS.writeFile fileName (String.intercalate "\n" decls ++ "\n\n" ++ rawProgram)
 

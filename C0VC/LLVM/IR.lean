@@ -15,6 +15,12 @@ deriving Inhabited
 abbrev ValName := String
 abbrev Arg := Tau × ValName
 
+inductive Callee where
+  | source (fname : String)
+  | external (fname : String)
+  | runtime (fname : String)
+deriving Inhabited
+
 inductive BinOp where
   | add
   | sub
@@ -46,12 +52,12 @@ deriving Inhabited
 
 inductive Expr where
   | binop (op : BinOp) (tau : Tau) (lhs : Val) (rhs : Val)
-  | call (tau : Tau) (fname : String) (args : List (Tau × Val))
+  | call (tau : Tau) (callee : Callee) (args : List (Tau × Val))
 deriving Inhabited
 
 inductive Stm where
   | assign (dest : Val) (exp : Expr)
-  | callVoid (fname : String) (args : List (Tau × Val))
+  | callVoid (callee : Callee) (args : List (Tau × Val))
   | label (l : Label)
   | brJump (l : Label)
   | brIte (val : Val) (thenBranch : Label) (elseBranch : Label)
@@ -108,19 +114,24 @@ def ppArg (arg : Arg) : String :=
   let (tau, name) := arg
   s!"{ppTau tau} {name}"
 
+def ppCallee : Callee → String
+  | .source fname => s!"source {fname}"
+  | .external fname => s!"external {fname}"
+  | .runtime fname => s!"runtime {fname}"
+
 def ppTypedVal (typedVal : Tau × Val) : String :=
   let (tau, val) := typedVal
   s!"{ppTau tau} {ppVal val}"
 
 def ppExpr : Expr → String
   | .binop op tau lhs rhs => s!"{ppBinOp op} {ppTau tau} {ppVal lhs}, {ppVal rhs}"
-  | .call tau fname args =>
-      s!"call {ppTau tau} {fname}({String.intercalate ", " (args.map ppTypedVal)})"
+  | .call tau callee args =>
+      s!"call {ppTau tau} {ppCallee callee}({String.intercalate ", " (args.map ppTypedVal)})"
 
 def ppStm : Stm → String
   | .assign dest exp => s!"{ppVal dest} <- {ppExpr exp};"
-  | .callVoid fname args =>
-      s!"call void {fname}({String.intercalate ", " (args.map ppTypedVal)});"
+  | .callVoid callee args =>
+      s!"call void {ppCallee callee}({String.intercalate ", " (args.map ppTypedVal)});"
   | .label l => s!"{l.name}:"
   | .brJump l => s!"br {l.name};"
   | .brIte val thenBranch elseBranch =>
@@ -150,22 +161,27 @@ def ppTypedValRaw (typedVal : Tau × Val) : String :=
   let (tau, val) := typedVal
   s!"({ppTau tau}, {ppValRaw val})"
 
+def ppCalleeRaw : Callee → String
+  | .source fname => s!"Source({fname})"
+  | .external fname => s!"External({fname})"
+  | .runtime fname => s!"Runtime({fname})"
+
 def ppExprRaw (indentLevel : Nat) : Expr → String
   | .binop op tau lhs rhs =>
       s!"{spaces indentLevel}Binop({ppBinOp op}, {ppTau tau},\n"
       ++ s!"{spaces (indentLevel + 1)}{ppValRaw lhs},\n"
       ++ s!"{spaces (indentLevel + 1)}{ppValRaw rhs}\n"
       ++ s!"{spaces indentLevel})"
-  | .call tau fname args =>
-      s!"{spaces indentLevel}Call({ppTau tau}, {fname}, ["
+  | .call tau callee args =>
+      s!"{spaces indentLevel}Call({ppTau tau}, {ppCalleeRaw callee}, ["
       ++ String.intercalate ", " (args.map ppTypedValRaw)
       ++ "])"
 
 def ppStmRaw (indentLevel : Nat) : Stm → String
   | .assign dest exp =>
       s!"{spaces indentLevel}Assign({ppValRaw dest},\n{ppExprRaw (indentLevel + 1) exp}\n{spaces indentLevel})"
-  | .callVoid fname args =>
-      s!"{spaces indentLevel}CallVoid({fname}, [{String.intercalate ", " (args.map ppTypedValRaw)}])"
+  | .callVoid callee args =>
+      s!"{spaces indentLevel}CallVoid({ppCalleeRaw callee}, [{String.intercalate ", " (args.map ppTypedValRaw)}])"
   | .label l =>
       s!"{spaces indentLevel}Label({l.name})"
   | .brJump l =>
