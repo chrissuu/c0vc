@@ -400,7 +400,7 @@ private def registerHeaderGDecl (fenv : FnEnv) : GDecl → Except String FnEnv
       if fname == "main" then
         .error "Headers cannot declare main function"
       else
-        registerFn fenv fname retType params true true
+        registerFn fenv fname retType params false true
   | .fdefn .. =>
       .error "Function definitions are not allowed in header files"
   | .typedef .. => .ok fenv
@@ -419,6 +419,7 @@ private def keepHeaderGDecl : GDecl → Bool
 
 private def keepSourceGDecl : GDecl → Bool
   | .fdefn .. => true
+  | .fdecl .. => true
   | _ => false
 
 private def seedMainFn (fenv : FnEnv) : Except String FnEnv :=
