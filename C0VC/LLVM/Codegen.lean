@@ -214,10 +214,18 @@ def translateExpr (expr : Tree.Expr) (tc : TempCounter) (fenv : FEnv) (tenv : TE
 def mkFenv (program : Tree.Program) : FEnv :=
   List.foldl
   (λ env fdefn =>
-    env.insert fdefn.fname
+    let info :=
       { retTau := translateTau fdefn.tau
       , argsTau := List.map (λ (tau, _) => translateTau tau) fdefn.args
       , external := fdefn.external }
+    match env.get? fdefn.fname with
+    | some existing =>
+      if existing.external && !fdefn.external then
+        env.insert fdefn.fname info
+      else
+        env
+    | none =>
+      env.insert fdefn.fname info
   )
   {}
   program

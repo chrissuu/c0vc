@@ -141,8 +141,19 @@ def runtimeDecls : String :=
 def emitExternalDecl (decl : IR.FunctionDef) : String :=
   s!"declare {emitTau decl.tau} @{decl.fname}({emitParamTaus (decl.args.map (fun (tau, _) => tau))})"
 
+def dedupStrings : List String → List String :=
+  let rec go (seen acc rest : List String) :=
+    match rest with
+    | [] => acc.reverse
+    | s :: ss =>
+      if seen.contains s then
+        go seen acc ss
+      else
+        go (s :: seen) (s :: acc) ss
+  go [] []
+
 def externalDecls (program : IR.Program) : String :=
-  String.intercalate "\n" ((program.filter (fun fdefn => fdefn.external)).map emitExternalDecl)
+  String.intercalate "\n" (dedupStrings ((program.filter (fun fdefn => fdefn.external)).map emitExternalDecl))
 
 def emit (program : IR.Program) (fileName : String): IO Unit :=
   let rawProgram := "\n\n".intercalate ((program.filter (fun fdefn => not fdefn.external)).map emitFdefn)
