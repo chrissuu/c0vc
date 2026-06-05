@@ -1,4 +1,6 @@
-TODO:
+
+
+GENERAL GOALS::
 1. The programmer should be able to read C0/C1 programs and emit a new Boole file translation
 2. The programmer should be able to inline C0/C1 programs in Lean files and emit a Boole translation
 3. The programmer should be able to inline C0/C1 programs in Lean files, then reason about the Boole program
@@ -7,4 +9,15 @@ TODO:
 6. One of the end goals may be: prove the translations hold! I.e., obligations/annotations proven to be true in Boole => these hold also in C0
     -  this means we can do pretty interesting things, no? We can make proving obligations easier by having our elaboration stage elaborate away unrelated proof material, which makes it easier for statements to be shown true/false in Boole, and the translation correctness theorem gives you Boole Correctness => Elaborated C0 correctness => C0 correctness for free
 
-Compiler name: c0vc (C0 verified compiler).
+
+6/4: Memory 
+    - AST:
+        - lvalue definitions
+        - struct definitions
+    - parser should now have:
+        - lvalue
+        - struct handling
+    - handle ambiguities in lexer 
+    - lowering to tree (by tree IR, memory should be abstracted away)
+
+5/..: Change compiler /project name to: c0vc (C0 verified compiler).

@@ -326,6 +326,9 @@ partial def parseExpr : P MarkedExpr :=
 
 end
 
+
+-- <lv> ::= <vid> | <lv> . <fid> | <lv> -> <fid>
+-- | * <lv> | <lv> [ <exp> ]
 partial def parseLValueName : P String :=
   parseIdent
   <|>
@@ -549,14 +552,14 @@ partial def parseErrorStm : P MarkedStm := do
 
 partial def parseNonSimpleStm : P MarkedStm :=
   withErrorMessage "while parsing statement" <|
-    (parseBlockStm
+    (parseSimpleStm
     <|> parseIfStm
     <|> parseWhileStm
     <|> parseForStm
     <|> parseReturnStm
-    <|> parseAnnotationStm
-    <|> parseSimpleStm
+    <|> parseBlockStm
     <|> parseAssertStm
+    <|> parseAnnotationStm
     <|> parseErrorStm)
 
 partial def parseStm : P MarkedStm :=
