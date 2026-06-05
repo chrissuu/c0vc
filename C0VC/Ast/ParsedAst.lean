@@ -59,6 +59,7 @@ inductive Tau where
   | bool
   | void
   | typeName (name : String)
+  | struct (name : String)
 deriving Inhabited
 
 mutual
@@ -73,12 +74,19 @@ inductive Expr where
   | ternary (test : MarkedExpr) (thenVal : MarkedExpr) (elseVal : MarkedExpr)
   | trueLit
   | falseLit
+  | null
   | charLit (char : Char)
   | stringLit (string : String)
   | call (fname : String) (args : List MarkedExpr)
   | length (arrayLike : MarkedExpr)
   | result
   | hastag
+  | dot (struct : MarkedExpr) (field : String)
+  | arrow (structPtr : MarkedExpr) (field : String)
+  | alloc (type : Tau)
+  | allocArray (type : Tau) (size : MarkedExpr)
+  | deref (ptr : MarkedExpr)
+  | arrAccess (arr : MarkedExpr) (index : MarkedExpr)
 
 structure MarkedExpr where
   node : Expr
@@ -129,11 +137,13 @@ deriving Inhabited
 end
 
 abbrev Param := Tau × String
+abbrev Field := Tau × String
 
 inductive GDecl where
   | fdecl (retType : Tau) (fname : String) (params : List Param) (annotations : List MarkedStm)
   | fdefn (retType : Tau) (fname : String) (params : List Param) (body : List MarkedStm) (annotations : List MarkedStm)
   | typedef (type : Tau) (alias : String)
+  | structDecl (name : String) (fields : List Field)
 deriving Inhabited
 
 abbrev Program := List GDecl
@@ -185,6 +195,7 @@ def ppTau : Tau → String
   | .bool => "bool"
   | .void => "void"
   | .typeName t => t
+  | .struct s => s!"struct {s}"
 
 private def indent (str : String) : String :=
   str.splitOn "\n"
@@ -205,6 +216,7 @@ partial def ppExpr : Expr → String
   | .intLit n => toString n
   | .trueLit => "true"
   | .falseLit => "false"
+  | .null => "NULL"
   | .stringLit s => s
   | .charLit c => toString c
   | .unop op operand =>
@@ -219,6 +231,12 @@ partial def ppExpr : Expr → String
   | .length arrayLike => s!"\\length ({ppMarkedExpr arrayLike})"
   | .result => "\\result"
   | .hastag => "\\hastag"
+  | .dot struct field => s!"{ppMarkedExpr struct}.{field}"
+  | .arrow structPtr field => s!"{ppMarkedExpr structPtr}->{field}"
+  | .alloc type => s!"alloc({ppTau type})"
+  | .allocArray type size => s!"alloc_array({ppTau type}, {ppMarkedExpr size})"
+  | .deref ptr => s!"*({ppMarkedExpr ptr})"
+  | .arrAccess arr index => s!"{ppMarkedExpr arr}[{ppMarkedExpr index}]"
 
 partial def ppMarkedExpr (e : MarkedExpr) : String :=
   ppExpr e.node
@@ -292,9 +310,15 @@ def ppStms (stms : List MarkedStm) : String :=
 def ppParam : Param → String
   | (tau, id) => s!"{ppTau tau} {id}"
 
+def ppField : Field → String
+  | (tau, id) => s!"{ppTau tau} {id};"
+
 def ppParams (params : List Param) : String :=
   let paramsStr := String.intercalate ", " (params.map ppParam)
   s!"({paramsStr})"
+
+def ppFields (fields : List Field) : String :=
+  String.intercalate "\n" (fields.map fun field => indent (ppField field))
 
 def ppAnnos (annos : List MarkedStm) : String :=
   let annosStr := String.intercalate ", " (annos.map ppMarkedStm)
@@ -303,6 +327,8 @@ def ppAnnos (annos : List MarkedStm) : String :=
 def ppGDecl : GDecl → String
   | .typedef tau id =>
       s!"typedef {ppTau tau} {id};"
+  | .structDecl name fields =>
+      s!"struct {name} \{\n{ppFields fields}\n};"
   | .fdecl ret id params annotations =>
       s!"{ppAnnos annotations}\{\n}{ppTau ret} {id}{ppParams params};"
   | .fdefn ret id params stms annotations =>
@@ -360,6 +386,8 @@ def ppStmsRaw (stms : List MarkedStm) : String :=
 def ppGDeclRaw : GDecl → String
   | .typedef tau id =>
       s!"Typedef({ppTau tau}, {id})"
+  | .structDecl name fields =>
+      s!"StructDecl({name}, [{String.intercalate ", " (fields.map ppParam)}])"
   | .fdecl ret id params annotations =>
       s!"Fdecl({ppTau ret}, {id}, [{String.intercalate ", " (params.map ppParam)}], [{String.intercalate ", " (annotations.map ppMarkedStm)}])"
   | .fdefn ret id params stms annotations =>
