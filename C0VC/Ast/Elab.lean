@@ -101,6 +101,18 @@ partial def elabMExpr (mexp : MarkedExpr) :=
     mkElabExpr (.ternary (elabMExpr test) (elabMExpr thenBranch) (elabMExpr elseBranch)) mexp.span
   | .call fname args =>
     mkElabExpr (.call fname (List.map elabMExpr args)) mexp.span
+  | .length arrayLike =>
+    mkElabExpr (.length (elabMExpr arrayLike)) mexp.span
+  | .dot struct field =>
+    mkElabExpr (.dot (elabMExpr struct) field) mexp.span
+  | .arrow structPtr field =>
+    mkElabExpr (.arrow (elabMExpr structPtr) field) mexp.span
+  | .allocArray type size =>
+    mkElabExpr (.allocArray type (elabMExpr size)) mexp.span
+  | .deref ptr =>
+    mkElabExpr (.deref (elabMExpr ptr)) mexp.span
+  | .arrAccess arr index =>
+    mkElabExpr (.arrAccess (elabMExpr arr) (elabMExpr index)) mexp.span
   | _ => mexp
 
 def assignOpToBinOp : AssignOp → Option BinOp
@@ -210,6 +222,7 @@ def tauEq : Tau → Tau → Bool
   | .bool, .bool => true
   | .void, .void => true
   | .typeName lhs, .typeName rhs => lhs == rhs
+  | .struct lhs, .struct rhs => lhs == rhs
   | _, _ => false
 
 def fnSigEq (retType : Tau) (paramTypes : List Tau) (info : FnInfo) : Bool :=
@@ -240,7 +253,7 @@ def registerFn
 mutual
 partial def collectCallsMExpr (mexpr : MarkedExpr) : Std.HashSet String :=
   match mexpr.node with
-  | .var _ | .intLit _ | .trueLit | .falseLit | .charLit _ | .stringLit _ | .result | .hastag => {}
+  | .var _ | .intLit _ | .trueLit | .falseLit | .null | .charLit _ | .stringLit _ | .result | .hastag | .alloc _ => {}
   | .binop _ lhs rhs =>
       (collectCallsMExpr lhs).fold (fun acc fname => acc.insert fname) (collectCallsMExpr rhs)
   | .unop _ operand =>
@@ -255,6 +268,16 @@ partial def collectCallsMExpr (mexpr : MarkedExpr) : Std.HashSet String :=
         (({} : Std.HashSet String).insert fname)
   | .length arrayLike =>
       collectCallsMExpr arrayLike
+  | .dot struct _ =>
+      collectCallsMExpr struct
+  | .arrow structPtr _ =>
+      collectCallsMExpr structPtr
+  | .allocArray _ size =>
+      collectCallsMExpr size
+  | .deref ptr =>
+      collectCallsMExpr ptr
+  | .arrAccess arr index =>
+      (collectCallsMExpr arr).fold (fun acc fname => acc.insert fname) (collectCallsMExpr index)
 
 partial def collectCallsMAnno (manno : MarkedAnno) : Std.HashSet String :=
   match manno.node with
@@ -297,6 +320,7 @@ def collectCallsGDecl : GDecl → Std.HashSet String
       let calls := body.foldl (fun calls stm => (collectCallsMStm stm).fold (fun acc fname => acc.insert fname) calls) {}
       annotations.foldl (fun calls anno => (collectCallsMStm anno).fold (fun acc fname => acc.insert fname) calls) calls
   | .typedef .. => {}
+  | .sdecl .. => {}
 
 def checkReferencedFnsDefined (fenv : FnEnv) (referenced : Std.HashSet String) : Except String Unit :=
   referenced.fold
@@ -348,6 +372,30 @@ def checkParamTypesNotVoid (params : List Param) : Except String Unit := do
     else
       .ok ())
 
+def elabFields (fields : List Field) (env : Env) : Except String (List Field) :=
+  List.mapM (λ (tau, fieldName) => do
+    let tau' ← elabTypeName env tau
+    .ok (tau', fieldName))
+  fields
+
+def checkFieldNamesUnique (fields : List Field) : Except String Unit := do
+  let _ ← List.foldlM
+    (λ (seenFields : Std.HashSet String) (_, field) =>
+      if seenFields.contains field then
+        .error "Struct contains non-unique field names"
+      else
+        .ok (seenFields.insert field))
+    {}
+    fields
+  .ok ()
+
+def checkFieldTypesNotVoid (fields : List Field) : Except String Unit := do
+  fields.forM (λ (tau, _) =>
+    if tauEq tau .void then
+      .error "Field type cannot be of type void"
+    else
+      .ok ())
+
 def elabGDecl (gdecl : GDecl) (env : Env) : Except String (GDecl × Env) := do
   match gdecl with
   | .fdefn retType fname params body annotations =>
@@ -384,6 +432,11 @@ def elabGDecl (gdecl : GDecl) (env : Env) : Except String (GDecl × Env) := do
       .error "typedef cannot alias void"
     else
       .ok (.typedef t alias, env.insert alias t)
+  | .sdecl name fields =>
+    let _ ← checkFieldNamesUnique fields
+    let _ ← checkFieldTypesNotVoid fields
+    let fields' ← elabFields fields env
+    .ok (.sdecl name fields', env)
 
 def checkCallsDeclared (fenv : FnEnv) (calledFns : Std.HashSet String) : Except String Unit :=
   calledFns.fold
@@ -404,6 +457,7 @@ private def registerHeaderGDecl (fenv : FnEnv) : GDecl → Except String FnEnv
   | .fdefn .. =>
       .error "Function definitions are not allowed in header files"
   | .typedef .. => .ok fenv
+  | .sdecl .. => .ok fenv
 
 private def registerSourceGDecl (fenv : FnEnv) : GDecl → Except String FnEnv
   | .fdecl retType fname params _ =>
@@ -411,10 +465,12 @@ private def registerSourceGDecl (fenv : FnEnv) : GDecl → Except String FnEnv
   | .fdefn retType fname params _ _ =>
       registerFn fenv fname retType params true false
   | .typedef .. => .ok fenv
+  | .sdecl .. => .ok fenv
 
 private def keepHeaderGDecl : GDecl → Bool
   | .fdecl .. => true
   | .fdefn .. => true
+  | .sdecl .. => true
   | .typedef .. => false
 
 private def keepSourceGDecl : GDecl → Bool

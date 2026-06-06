@@ -9,6 +9,7 @@ def convertTau : C0VC.Ast.Tau → Except String C0VC.ElabbedAst.Tau
   | .string => .ok .string
   | .bool => .ok .bool
   | .void => .ok .void
+  | .struct name => .ok (.struct name)
   | .typeName name =>
       .error s!"type name `{name}` found after elaboration"
 
@@ -54,6 +55,7 @@ partial def convertExpr : C0VC.Ast.Expr → Except String C0VC.ElabbedAst.Expr
       .ok (.ternary test' thenVal' elseVal')
   | .trueLit => .ok .trueLit
   | .falseLit => .ok .falseLit
+  | .null => .ok .null
   | .charLit char => .ok (.charLit char)
   | .stringLit string => .ok (.stringLit string)
   | .call fname args => do
@@ -64,6 +66,26 @@ partial def convertExpr : C0VC.Ast.Expr → Except String C0VC.ElabbedAst.Expr
       .ok (.length arrayLike')
   | .result => .ok .result
   | .hastag => .ok .hastag
+  | .dot struct field => do
+      let struct' ← convertMExpr struct
+      .ok (.dot struct' field)
+  | .arrow structPtr field => do
+      let structPtr' ← convertMExpr structPtr
+      .ok (.arrow structPtr' field)
+  | .alloc type => do
+      let type' ← convertTau type
+      .ok (.alloc type')
+  | .allocArray type size => do
+      let type' ← convertTau type
+      let size' ← convertMExpr size
+      .ok (.allocArray type' size')
+  | .deref ptr => do
+      let ptr' ← convertMExpr ptr
+      .ok (.deref ptr')
+  | .arrAccess arr index => do
+      let arr' ← convertMExpr arr
+      let index' ← convertMExpr index
+      .ok (.arrAccess arr' index')
 end
 
 mutual
@@ -145,6 +167,11 @@ def convertParam (param : C0VC.Ast.Param) : Except String C0VC.ElabbedAst.Param 
   let tau' ← convertTau tau
   .ok (tau', name)
 
+def convertField (field : C0VC.Ast.Field) : Except String C0VC.ElabbedAst.Field := do
+  let (tau, name) := field
+  let tau' ← convertTau tau
+  .ok (tau', name)
+
 def convertGDecl : C0VC.Ast.GDecl → Except String C0VC.ElabbedAst.GDecl
   | .fdefn retType fname params body annotations => do
       let retType' ← convertTau retType
@@ -158,12 +185,20 @@ def convertGDecl : C0VC.Ast.GDecl → Except String C0VC.ElabbedAst.GDecl
         body := body',
         annotations := annotations'
       })
+
   | .fdecl retType fname params _ => do
       let retType' ← convertTau retType
       let params' ← params.mapM convertParam
       .ok (.fdecl retType' fname params' true)
+
   | .typedef .. =>
       .error "typedef found after elaboration"
+
+  | .sdecl name fields => do
+      let fields' ← fields.mapM convertField
+      .ok (.sdecl name fields')
+
+
 
 def convertProgram (program : C0VC.Ast.Program) : Except String C0VC.ElabbedAst.Program := do
   program.mapM convertGDecl

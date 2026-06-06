@@ -14,12 +14,19 @@ inductive Expr where
   | ternary (test : TypedExpr) (thenVal : TypedExpr) (elseVal : TypedExpr)
   | trueLit
   | falseLit
+  | null
   | charLit (char : Char)
   | stringLit (string : String)
   | call (fname : String) (args : List TypedExpr)
   | length (arrayLike : TypedExpr)
   | result
   | hastag
+  | dot (struct : TypedExpr) (field : String)
+  | arrow (structPtr : TypedExpr) (field : String)
+  | alloc (type : Tau)
+  | allocArray (type : Tau) (size : TypedExpr)
+  | deref (ptr : TypedExpr)
+  | arrAccess (arr : TypedExpr) (index : TypedExpr)
 
 structure TypedExpr where
   node : Expr
@@ -81,6 +88,7 @@ partial def ppExpr : Expr → String
   | .intLit n => toString n
   | .trueLit => "true"
   | .falseLit => "false"
+  | .null => "NULL"
   | .stringLit s => s
   | .charLit c => toString c
   | .binop op lhs rhs =>
@@ -93,6 +101,12 @@ partial def ppExpr : Expr → String
   | .length arrayLike => s!"\\length ({ppTypedExpr arrayLike})"
   | .result => "\\result"
   | .hastag => "\\hastag"
+  | .dot struct field => s!"{ppTypedExpr struct}.{field}"
+  | .arrow structPtr field => s!"{ppTypedExpr structPtr}->{field}"
+  | .alloc type => s!"alloc({ppTau type})"
+  | .allocArray type size => s!"alloc_array({ppTau type}, {ppTypedExpr size})"
+  | .deref ptr => s!"*({ppTypedExpr ptr})"
+  | .arrAccess arr index => s!"{ppTypedExpr arr}[{ppTypedExpr index}]"
 
 partial def ppTypedExpr (e : TypedExpr) : String :=
   s!"{ppExpr e.node}:{ppTau e.tau}"
@@ -174,6 +188,7 @@ partial def ppExprRaw (indentLevel : Nat) : Expr → String
   | .intLit n => s!"{spaces indentLevel}IntLit({n})"
   | .trueLit => s!"{spaces indentLevel}TrueLit"
   | .falseLit => s!"{spaces indentLevel}FalseLit"
+  | .null => s!"{spaces indentLevel}Null"
   | .stringLit s => s!"{spaces indentLevel}StringLit({s})"
   | .charLit c => s!"{spaces indentLevel}CharLit({c})"
   | .binop op lhs rhs =>
@@ -187,6 +202,18 @@ partial def ppExprRaw (indentLevel : Nat) : Expr → String
       s!"{spaces indentLevel}Length(\n{ppTypedExprRaw (indentLevel + 1) arrayLike}\n{spaces indentLevel})"
   | .result => s!"{spaces indentLevel}Result"
   | .hastag => s!"{spaces indentLevel}Hastag"
+  | .dot struct field =>
+      s!"{spaces indentLevel}Dot(\n{ppTypedExprRaw (indentLevel + 1) struct},\n{spaces (indentLevel + 1)}{field}\n{spaces indentLevel})"
+  | .arrow structPtr field =>
+      s!"{spaces indentLevel}Arrow(\n{ppTypedExprRaw (indentLevel + 1) structPtr},\n{spaces (indentLevel + 1)}{field}\n{spaces indentLevel})"
+  | .alloc type =>
+      s!"{spaces indentLevel}Alloc({ppTau type})"
+  | .allocArray type size =>
+      s!"{spaces indentLevel}AllocArray({ppTau type},\n{ppTypedExprRaw (indentLevel + 1) size}\n{spaces indentLevel})"
+  | .deref ptr =>
+      s!"{spaces indentLevel}Deref(\n{ppTypedExprRaw (indentLevel + 1) ptr}\n{spaces indentLevel})"
+  | .arrAccess arr index =>
+      s!"{spaces indentLevel}ArrAccess(\n{ppTypedExprRaw (indentLevel + 1) arr},\n{ppTypedExprRaw (indentLevel + 1) index}\n{spaces indentLevel})"
 
 partial def ppTypedExprRaw (indentLevel : Nat) (e : TypedExpr) : String :=
   s!"{spaces indentLevel}TypedExpr({ppTau e.tau},\n{ppExprRaw (indentLevel + 1) e.node}\n{spaces indentLevel})"
