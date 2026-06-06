@@ -254,9 +254,9 @@ partial def translateStm
   : List Tree.Command × TempEnv × TempCounter × LabelCounter :=
   match mstm with
   | .assign lhs val =>
-    let (cmds, expr, env', tc', lc') := translateExpr senv val env tc lc
     match lhs.node with
     | .var varName =>
+        let (cmds, expr, env', tc', lc') := translateExpr senv val env tc lc
         match env.get? varName with
         | some temp =>
           (cmds ++ [.move temp expr], env', tc', lc')
@@ -264,8 +264,9 @@ partial def translateStm
           let (temp, tc') := Temp.bumpAndCreate tc
           (cmds ++ [.move temp expr], env', tc', lc')
     | _ =>
-        let (cmdsLhs, lhsExpr, env'', tc'', lc'') := translateLValueExpr senv lhs env' tc' lc'
-        (cmds ++ cmdsLhs ++ [.store lhsExpr expr], env'', tc'', lc'')
+        let (cmdsLhs, lhsExpr, env', tc', lc') := translateLValueExpr senv lhs env tc lc
+        let (cmdsRhs, expr, env'', tc'', lc'') := translateExpr senv val env' tc' lc'
+        (cmdsLhs ++ cmdsRhs ++ [.store lhsExpr expr], env'', tc'', lc'')
 
   | .ifLit test thenBranch elseBranch =>
     let emitLabel (cmds : List Command) :=

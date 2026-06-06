@@ -27,10 +27,12 @@ Author: Chris Su <chrjs@cmu.edu>
 import C0VC.Ast.ParsedAst
 import C0VC.Ast.Trans
 import C0VC.Utils.SrcSpan
+import C0VC.Utils.Temp
 import Std.Data.HashMap
 
 open C0VC.Ast
 open C0VC.Utils.SrcSpan
+open C0VC.Utils.Temp
 open Std.HashMap
 
 abbrev Env := Std.HashMap String Tau
@@ -208,51 +210,80 @@ def assignOpToBinOp : AssignOp → Option BinOp
   | .shlEq => some .shl
   | .shrEq => some .shr
 
-partial def elabMStm (env : Env) (mstm : MarkedStm) : Except String MarkedStm := do
+abbrev StmWrap := MarkedStm → MarkedStm
+
+-- handles stateful lvalues such as: A[f()] += x
+-- naively elaborating this into A[f()] = A[f()] + x, would call f() twice.
+partial def materializeLValueIndices (tc : TempCounter) (mlv : MarkedLValue) :
+    TempCounter × StmWrap × MarkedLValue :=
+  match mlv.node with
+  | .var _ =>
+      (tc, id, mlv)
+  | .deref ptr =>
+      let (tc', wrap, ptr') := materializeLValueIndices tc ptr
+      (tc', wrap, { mlv with node := .deref ptr' })
+  | .dot struct field =>
+      let (tc', wrap, struct') := materializeLValueIndices tc struct
+      (tc', wrap, { mlv with node := .dot struct' field })
+  | .arrow structPtr field =>
+      let (tc', wrap, structPtr') := materializeLValueIndices tc structPtr
+      (tc', wrap, { mlv with node := .arrow structPtr' field })
+  | .arrAccess arr index =>
+      let (tc', wrapArr, arr') := materializeLValueIndices tc arr
+      let (temp, tc'') := Temp.bumpAndCreateNamed tc' "__asop_idx"
+      let tempName := s!"$c0vc_asop_idx_{temp.name}"
+      let tempExpr := mkElabExpr (.var tempName) index.span
+      let mlv' := { mlv with node := .arrAccess arr' tempExpr }
+      let wrap : StmWrap := fun body =>
+        wrapArr (mkElabStm (.declare tempName .int (some index) body) (spanCoverOpt index.span body.span))
+      (tc'', wrap, mlv')
+
+partial def elabMStm (env : Env) (tc : TempCounter) (mstm : MarkedStm) : Except String (TempCounter × MarkedStm) := do
   match mstm.node with
   | .assign lhs val => do
     let lhs' ← elabMLValue env lhs
     let val' ← elabMExpr env val
-    .ok (mkElabStm (.assign lhs' val') mstm.span)
+    .ok (tc, mkElabStm (.assign lhs' val') mstm.span)
   | .ifLit test thenBranch elseBranch =>
     let test' ← elabMExpr env test
-    let thenBranch' ← elabMStm env thenBranch
-    let elseBranch' ← elabMStm env elseBranch
-    .ok (mkElabStm (.ifLit test' thenBranch' elseBranch') mstm.span)
+    let (tc', thenBranch') ← elabMStm env tc thenBranch
+    let (tc'', elseBranch') ← elabMStm env tc' elseBranch
+    .ok (tc'', mkElabStm (.ifLit test' thenBranch' elseBranch') mstm.span)
   | .whileLit test body step =>
     let test' ← elabMExpr env test
-    let body' ← elabMStm env body
-    let step' ← elabMStm env step
-    .ok (mkElabStm (.whileLit test' body' step') mstm.span)
+    let (tc', body') ← elabMStm env tc body
+    let (tc'', step') ← elabMStm env tc' step
+    .ok (tc'', mkElabStm (.whileLit test' body' step') mstm.span)
   | .ret valOpt =>
     match valOpt with
     | some val =>
       let val' ← elabMExpr env val
-      .ok (mkElabStm (.ret (some val')) mstm.span)
-    | none => .ok (mkElabStm (.ret none) mstm.span)
+      .ok (tc, mkElabStm (.ret (some val')) mstm.span)
+    | none => .ok (tc, mkElabStm (.ret none) mstm.span)
   | .seq first rest =>
-    let first' ← elabMStm env first
-    let rest' ← elabMStm env rest
+    let (tc', first') ← elabMStm env tc first
+    let (tc'', rest') ← elabMStm env tc' rest
     let span := spanCoverOpt first.span rest.span
-    .ok (mkElabStm (.seq first' rest') span)
+    .ok (tc'', mkElabStm (.seq first' rest') span)
   | .declare varName tau init value =>
     if env.contains varName then
       throw "Variable cannot have the same name as a type"
     let t ← elabTypeName env tau
     let init' ← init.mapM (elabMExpr env)
-    let value' ← elabMStm env value
-    .ok (mkElabStm (.declare varName t init' value') mstm.span)
+    let (tc', value') ← elabMStm env tc value
+    .ok (tc', mkElabStm (.declare varName t init' value') mstm.span)
   | .asop lhs op value =>
     let lhs' ← elabMLValue env lhs
     match assignOpToBinOp op with
     | none =>
       let value' ← elabMExpr env value
-      .ok (mkElabStm (.assign lhs' value') mstm.span)
+      .ok (tc, mkElabStm (.assign lhs' value') mstm.span)
     | some binop =>
-      let lhsExpr := markedLValueToExpr lhs'
       let value' ← elabMExpr env value
+      let (tc', wrap, lhs'') := materializeLValueIndices tc lhs'
+      let lhsExpr := markedLValueToExpr lhs''
       let rhs := mkElabExpr (.binop binop lhsExpr value') mstm.span
-      .ok (mkElabStm (.assign lhs' rhs) mstm.span)
+      .ok (tc', wrap (mkElabStm (.assign lhs'' rhs) mstm.span))
   | .forLit init test update body =>
     let bodySpan := spanCoverOpt body.span update.span
     let whileSpan := spanCoverOpt test.span bodySpan
@@ -261,32 +292,51 @@ partial def elabMStm (env : Env) (mstm : MarkedStm) : Except String MarkedStm :=
     match init.node with
     | .declare varName tau init initBody =>
       let scopedFor := mkElabStm (.declare varName tau init (mkElabStm (.seq initBody desugaredWhile) forSpan)) forSpan
-      elabMStm env scopedFor
+      elabMStm env tc scopedFor
     | _ =>
       let desugaredFor := mkElabStm (.seq init desugaredWhile) forSpan
-      elabMStm env desugaredFor
+      elabMStm env tc desugaredFor
   | .expr e => do
     let e' ← elabMExpr env e
-    .ok (mkElabStm (.expr e') mstm.span)
+    .ok (tc, mkElabStm (.expr e') mstm.span)
   | .assert test => do
     let test' ← elabMExpr env test
-    .ok (mkElabStm (.assert test') mstm.span)
+    .ok (tc, mkElabStm (.assert test') mstm.span)
   | .error e => do
     let e' ← elabMExpr env e
-    .ok (mkElabStm (.error e') mstm.span)
+    .ok (tc, mkElabStm (.error e') mstm.span)
   | .incr lhs =>
     let lhs' ← elabMLValue env lhs
-    let lhsExpr := markedLValueToExpr lhs'
+    let (tc', wrap, lhs'') := materializeLValueIndices tc lhs'
+    let lhsExpr := markedLValueToExpr lhs''
     let one := mkElabExpr (.intLit 1) mstm.span
     let rhs := mkElabExpr (.binop .plus lhsExpr one) mstm.span
-    .ok (mkElabStm (.assign lhs' rhs) mstm.span)
+    .ok (tc', wrap (mkElabStm (.assign lhs'' rhs) mstm.span))
   | .decr lhs =>
     let lhs' ← elabMLValue env lhs
-    let lhsExpr := markedLValueToExpr lhs'
+    let (tc', wrap, lhs'') := materializeLValueIndices tc lhs'
+    let lhsExpr := markedLValueToExpr lhs''
     let one := mkElabExpr (.intLit 1) mstm.span
     let rhs := mkElabExpr (.binop .sub lhsExpr one) mstm.span
-    .ok (mkElabStm (.assign lhs' rhs) mstm.span)
-  | _ => .ok mstm
+    .ok (tc', wrap (mkElabStm (.assign lhs'' rhs) mstm.span))
+  | .annotation a => do
+    let a' ←
+      match a.node with
+      | .requires precondition => do
+          let precondition' ← elabMExpr env precondition
+          .ok <| mkElabAnno (.requires precondition') a.span
+      | .ensures postcondition => do
+          let postcondition' ← elabMExpr env postcondition
+          .ok <| mkElabAnno (.ensures postcondition') a.span
+      | .asserts e => do
+          let e' ← elabMExpr env e
+          .ok <| mkElabAnno (.asserts e') a.span
+      | .loopInvariant e => do
+          let e' ← elabMExpr env e
+          .ok <| mkElabAnno (.loopInvariant e') a.span
+    .ok (tc, mkElabStm (.annotation a') mstm.span)
+  | .nop =>
+    .ok (tc, mstm)
 
 def elabMAnno (env : Env) (a : MarkedAnno) : Except String MarkedAnno := do
   match a.node with
@@ -505,6 +555,15 @@ def checkFieldTypesNotVoid (fields : List Field) : Except String Unit := do
     else
       .ok ())
 
+def elabMStms (env : Env) (tc : TempCounter) (stms : List MarkedStm) :
+    Except String (TempCounter × List MarkedStm) := do
+  let (tc', stmsRev) ← stms.foldlM
+    (fun (tcAcc, acc) stm => do
+      let (tcNext, stm') ← elabMStm env tcAcc stm
+      .ok (tcNext, stm' :: acc))
+    (tc, [])
+  .ok (tc', stmsRev.reverse)
+
 def elabGDecl (gdecl : GDecl) (env : Env) : Except String (GDecl × Env) := do
   match gdecl with
   | .fdefn retType fname params body annotations =>
@@ -514,8 +573,8 @@ def elabGDecl (gdecl : GDecl) (env : Env) : Except String (GDecl × Env) := do
     let _ ← checkParamTypesNotVoid params
     let retType' ← elabTypeName env retType
     let params' ← elabParams params env
-    let body' ← List.mapM (elabMStm env) body
-    let annotations' ← List.mapM (elabMStm env) annotations
+    let (tc', body') ← elabMStms env 0 body
+    let (_, annotations') ← elabMStms env tc' annotations
     .ok
       ( .fdefn retType' fname params' body' annotations'
       , env
@@ -527,7 +586,7 @@ def elabGDecl (gdecl : GDecl) (env : Env) : Except String (GDecl × Env) := do
     let _ ← checkParamTypesNotVoid params
     let retType' ← elabTypeName env retType
     let params' ← elabParams params env
-    let annotations' ← List.mapM (elabMStm env) annotations
+    let (_, annotations') ← elabMStms env 0 annotations
     .ok
       ( .fdecl retType' fname params' annotations'
       , env

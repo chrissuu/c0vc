@@ -454,9 +454,9 @@ def translateCmd
     , tenv'')
 
   | .store dest src =>
-    let (stmsSrc, transVal, tau, tc', tenv') := translateExpr cfg senv src tc fenv tenv
-    let (stmsDest, destAddr, _, tc'', tenv'') := translateAddr cfg senv dest tc' fenv tenv'
-    ( stmsSrc ++ stmsDest ++ [ .store tau transVal destAddr ]
+    let (stmsDest, destAddr, tau, tc', tenv') := translateAddr cfg senv dest tc fenv tenv
+    let (stmsSrc, transVal, _, tc'', tenv'') := translateExpr cfg senv src tc' fenv tenv'
+    ( stmsDest ++ stmsSrc ++ [ .store tau transVal destAddr ]
     , tc''
     , lc
     , tenv'')
