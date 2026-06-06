@@ -62,10 +62,11 @@ int __c0vc_checked_shl(int lhs, int rhs) {
 }
 
 void* __c0vc_alloc(int size) {
-  if (size <= 0) {
+  if (size < 0) {
     __c0vc_abort("invalid allocation size");
   }
-  void* ptr = calloc(1, (size_t)size);
+  size_t bytes = size == 0 ? 1 : (size_t)size;
+  void* ptr = calloc(1, bytes);
   if (ptr == NULL) {
     __c0vc_abort("out of memory");
   }
@@ -76,16 +77,16 @@ void* __c0vc_alloc_array(int count, int elem_size) {
   if (count < 0) {
     __c0vc_memory_error("negative array allocation size");
   }
-  if (elem_size <= 0) {
+  if (elem_size < 0) {
     __c0vc_abort("invalid array allocation size");
   }
   if (elem_size != 0 && count > (INT_MAX - C0VC_ARRAY_HEADER_SIZE) / elem_size) {
-    __c0vc_abort("array allocation size overflow");
+    __c0vc_memory_error("array allocation size overflow");
   }
   size_t bytes = (size_t)C0VC_ARRAY_HEADER_SIZE + ((size_t)count * (size_t)elem_size);
   char* raw = (char*)calloc(1, bytes);
   if (raw == NULL) {
-    __c0vc_abort("out of memory");
+    __c0vc_memory_error("out of memory");
   }
   *((int64_t*)raw) = (int64_t)count;
   return raw + C0VC_ARRAY_HEADER_SIZE;

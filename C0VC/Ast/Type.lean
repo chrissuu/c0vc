@@ -144,6 +144,15 @@ structure VarInfo where
 
 abbrev VEnv := Std.HashMap String VarInfo
 
+instance : Inhabited C0VC.TypedAst.TypedExpr where
+  default := { node := .intLit 0, tau := .int }
+
+instance : Inhabited C0VC.TypedAst.TypedLValue where
+  default := { node := .var "$c0vc_default", tau := .int }
+
+instance : Inhabited C0VC.TypedAst.Stm where
+  default := .nop
+
 def insertVEnv (venv : VEnv) (name : String) (varType : Tau) (initialized : Bool) : VEnv :=
   venv.insert name { name := name, varType := varType, initialized := initialized }
 
@@ -424,35 +433,35 @@ partial def tcLValue (senv : SEnv) (fenv : FEnv) (resultType : Option Tau) (mlv 
     Except String C0VC.TypedAst.TypedLValue := do
   match mlv.node with
   | .var name =>
-      let info ← tcVarReadable venv name
-      .ok (mkTLValue (.var name) info.varType)
+    let info ← tcVarReadable venv name
+    .ok (mkTLValue (.var name) info.varType)
   | .deref ptr =>
-      let tptr ← tcLValue senv fenv resultType ptr venv
-      match tptr.tau with
-      | .ptr tau => .ok (mkTLValue (.deref tptr) tau)
-      | _ => .error "dereference lvalue operand must have pointer type"
+    let tptr ← tcLValue senv fenv resultType ptr venv
+    match tptr.tau with
+    | .ptr tau => .ok (mkTLValue (.deref tptr) tau)
+    | _ => .error "dereference lvalue operand must have pointer type"
   | .dot struct field =>
-      let tstruct ← tcLValue senv fenv resultType struct venv
-      match tstruct.tau with
-      | .struct name =>
-          let fieldTau ← lookupField senv name field
-          .ok (mkTLValue (.dot tstruct field) fieldTau)
-      | _ => .error "left side of field lvalue access must have struct type"
+    let tstruct ← tcLValue senv fenv resultType struct venv
+    match tstruct.tau with
+    | .struct name =>
+        let fieldTau ← lookupField senv name field
+        .ok (mkTLValue (.dot tstruct field) fieldTau)
+    | _ => .error "left side of field lvalue access must have struct type"
   | .arrow structPtr field =>
-      let tstructPtr ← tcLValue senv fenv resultType structPtr venv
-      match tstructPtr.tau with
-      | .ptr (.struct name) =>
-          let fieldTau ← lookupField senv name field
-          .ok (mkTLValue (.arrow tstructPtr field) fieldTau)
-      | _ => .error "left side of arrow lvalue access must have pointer-to-struct type"
+    let tstructPtr ← tcLValue senv fenv resultType structPtr venv
+    match tstructPtr.tau with
+    | .ptr (.struct name) =>
+        let fieldTau ← lookupField senv name field
+        .ok (mkTLValue (.arrow tstructPtr field) fieldTau)
+    | _ => .error "left side of arrow lvalue access must have pointer-to-struct type"
   | .arrAccess arr index =>
-      let tarr ← tcLValue senv fenv resultType arr venv
-      let tindex ← tcExpr senv fenv resultType index venv
-      if not (tauEq tindex.tau .int) then
-        .error "array index must have type int"
-      match tarr.tau with
-      | .array tau => .ok (mkTLValue (.arrAccess tarr tindex) tau)
-      | _ => .error "array lvalue access operand must have array type"
+    let tarr ← tcLValue senv fenv resultType arr venv
+    let tindex ← tcExpr senv fenv resultType index venv
+    if not (tauEq tindex.tau .int) then
+      .error "array index must have type int"
+    match tarr.tau with
+    | .array tau => .ok (mkTLValue (.arrAccess tarr tindex) tau)
+    | _ => .error "array lvalue access operand must have array type"
 
 partial def tcCallArgs (senv : SEnv) (fenv : FEnv) (resultType : Option Tau) (fname : String)
     (args : List MarkedExpr) (params : List Param) (venv : VEnv) :
@@ -493,12 +502,54 @@ partial def tcAnno (senv : SEnv) (fenv : FEnv) (resultType : Option Tau) (anno :
     let te ← tcExpr senv fenv resultType e venv
     .ok (.loopInvariant te)
 
+partial def typedLValueToExpr (tlv : C0VC.TypedAst.TypedLValue) : C0VC.TypedAst.TypedExpr :=
+  let node :=
+    match tlv.node with
+    | .var name => .var name
+    | .deref ptr => .deref (typedLValueToExpr ptr)
+    | .dot struct field => .dot (typedLValueToExpr struct) field
+    | .arrow structPtr field => .arrow (typedLValueToExpr structPtr) field
+    | .arrAccess arr index => .arrAccess (typedLValueToExpr arr) index
+  { node := node, tau := tlv.tau }
 
--- TODO: this is kinda ugly
-partial def isCompilerTempDeclChain : MarkedStm → Bool
-  | { node := .declare varName _ _ body, .. } =>
-      varName.startsWith "$c0vc_" && isCompilerTempDeclChain body
-  | _ => true
+def assignOpToBinOp : AssignOp → Option BinOp
+  | .assign => none
+  | .plusEq => some .plus
+  | .subEq => some .sub
+  | .mulEq => some .mul
+  | .divEq => some .div
+  | .modEq => some .mod
+  | .bitAndEq => some .bitAnd
+  | .xorEq => some .xor
+  | .bitOrEq => some .bitOr
+  | .shlEq => some .shl
+  | .shrEq => some .shr
+
+partial def materializeAsopLValue (next : Nat) (tlv : C0VC.TypedAst.TypedLValue) :
+    Nat × (C0VC.TypedAst.Stm → C0VC.TypedAst.Stm) × C0VC.TypedAst.TypedLValue :=
+  match tlv.node with
+  | .var _ =>
+    (next, id, tlv)
+  | .deref ptr =>
+    let (next', wrap, ptr') := materializeAsopLValue next ptr
+    (next', wrap, { tlv with node := .deref ptr' })
+  | .dot struct field =>
+    let (next', wrap, struct') := materializeAsopLValue next struct
+    (next', wrap, { tlv with node := .dot struct' field })
+  | .arrow structPtr field =>
+    let (next', wrap, structPtr') := materializeAsopLValue next structPtr
+    (next', wrap, { tlv with node := .arrow structPtr' field })
+  | .arrAccess arr index =>
+    let (next', wrapArr, arr') := materializeAsopLValue next arr
+    let baseName := s!"$c0vc_asop_base_{next'}"
+    let indexName := s!"$c0vc_asop_idx_{next' + 1}"
+    let baseExpr := typedLValueToExpr arr'
+    let baseLValue := mkTLValue (.var baseName) arr.tau
+    let indexExpr := mkTExpr (.var indexName) .int
+    let tlv' := { tlv with node := .arrAccess baseLValue indexExpr }
+    let wrap : C0VC.TypedAst.Stm → C0VC.TypedAst.Stm := fun body =>
+      wrapArr (.declare baseName arr.tau (some baseExpr) (.declare indexName .int (some index) body))
+    (next' + 2, wrap, tlv')
 
 partial def tcMStm (senv : SEnv) (fenv : FEnv) (expectedRet : Tau) (mstm : MarkedStm) (venv : VEnv) :
     Except String (C0VC.TypedAst.Stm × VEnv) := do
@@ -506,24 +557,24 @@ partial def tcMStm (senv : SEnv) (fenv : FEnv) (expectedRet : Tau) (mstm : Marke
   | .assign lhs val =>
     match lhs.node with
     | .var varName =>
-        let varInfo ← tcVarDeclared venv varName
-        let _ ← tcSmallType varInfo.varType "assignment target"
-        let tval ← tcExpr senv fenv none val venv
-        let _ ← tcSmallType tval.tau "assigned expression"
-        if tauAssignable varInfo.varType tval.tau then
-          let venv' ← markVEnvInitialized venv varName
-          .ok (.assign (mkTLValue (.var varName) varInfo.varType) (coerceNullTo varInfo.varType tval), venv')
-        else
-          .error s!"assigning to {varName} an expression of different type"
+      let varInfo ← tcVarDeclared venv varName
+      let _ ← tcSmallType varInfo.varType "assignment target"
+      let tval ← tcExpr senv fenv none val venv
+      let _ ← tcSmallType tval.tau "assigned expression"
+      if tauAssignable varInfo.varType tval.tau then
+        let venv' ← markVEnvInitialized venv varName
+        .ok (.assign (mkTLValue (.var varName) varInfo.varType) (coerceNullTo varInfo.varType tval), venv')
+      else
+        .error s!"assigning to {varName} an expression of different type"
     | _ =>
-        let tlhs ← tcLValue senv fenv none lhs venv
-        let _ ← tcSmallType tlhs.tau "assignment target"
-        let tval ← tcExpr senv fenv none val venv
-        let _ ← tcSmallType tval.tau "assigned expression"
-        if tauAssignable tlhs.tau tval.tau then
-          .ok (.assign tlhs (coerceNullTo tlhs.tau tval), venv)
-        else
-          .error s!"assigning expression of type {ppTau tval.tau} to lvalue of type {ppTau tlhs.tau}"
+      let tlhs ← tcLValue senv fenv none lhs venv
+      let _ ← tcSmallType tlhs.tau "assignment target"
+      let tval ← tcExpr senv fenv none val venv
+      let _ ← tcSmallType tval.tau "assigned expression"
+      if tauAssignable tlhs.tau tval.tau then
+        .ok (.assign tlhs (coerceNullTo tlhs.tau tval), venv)
+      else
+        .error s!"assigning expression of type {ppTau tval.tau} to lvalue of type {ppTau tlhs.tau}"
 
   | .ifLit test thenBranch elseBranch =>
     let ttest ← tcExprHasType senv fenv none test venv .bool "if condition"
@@ -533,18 +584,7 @@ partial def tcMStm (senv : SEnv) (fenv : FEnv) (expectedRet : Tau) (mstm : Marke
 
   | .whileLit test body step =>
     match step.node with
-    | .declare .. =>
-      if !isCompilerTempDeclChain step then
-        .error "found a declaration in the step of a for loop"
-      else
-        let ttest ← tcExprHasType senv fenv none test venv .bool "while condition"
-        let (tbody, bodyEnv) ← tcMStm senv fenv expectedRet body venv
-        let (tstep, _) ← tcMStm senv fenv expectedRet step bodyEnv
-        let tbodyWithStep :=
-          match tstep with
-          | .nop => tbody
-          | _ => .seq tbody tstep
-        .ok (.whileLit ttest tbodyWithStep, venv)
+    | .declare .. => .error "found a declaration in the step of a for loop"
     | _ =>
       let ttest ← tcExprHasType senv fenv none test venv .bool "while condition"
       let (tbody, bodyEnv) ← tcMStm senv fenv expectedRet body venv
@@ -574,6 +614,25 @@ partial def tcMStm (senv : SEnv) (fenv : FEnv) (expectedRet : Tau) (mstm : Marke
         .ok (none, insertVEnv venv varName varType false)
     let (tbody, venvAfter) ← tcMStm senv fenv expectedRet body venvForBody
     .ok (.declare varName varType tinit tbody, venvAfter.erase varName)
+
+  | .asop lhs op value =>
+    match assignOpToBinOp op with
+    | none =>
+      tcMStm senv fenv expectedRet { node := .assign lhs value, span := mstm.span } venv
+    | some binop =>
+      let tlhs ← tcLValue senv fenv none lhs venv
+      let _ ← tcSmallType tlhs.tau "assignment target"
+      let tvalue ← tcExpr senv fenv none value venv
+      let _ ← tcSmallType tvalue.tau "assigned expression"
+      let (_, wrap, tlhs') := materializeAsopLValue 0 tlhs
+      let lhsExpr := typedLValueToExpr tlhs'
+      if not (binopArgTypesOk binop lhsExpr.tau tvalue.tau) then
+        .error "compound assignment arguments have invalid types"
+      let rhsTau := binopType binop
+      if not (tauAssignable tlhs'.tau rhsTau) then
+        .error s!"assigning expression of type {ppTau rhsTau} to lvalue of type {ppTau tlhs'.tau}"
+      let rhs := mkTExpr (.binop binop lhsExpr tvalue) rhsTau
+      .ok (wrap (.assign tlhs' rhs), venv)
 
   | .ret valOpt =>
     match valOpt with

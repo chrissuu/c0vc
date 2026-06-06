@@ -401,7 +401,7 @@ def mkFenv (program : Tree.Program) : FEnv :=
 --    if it's a ptr type, update ptr type, don't do anything else
 --    if it's not a ptr type, update env with the temp which stores the src
 -- If dest doesn't exist in env:
---    create a new ptr which houses this src
+--    bind register values directly and only allocate storage for immediates.
 
 -- USAGE RULES:
 -- When consuming a temp:
@@ -454,6 +454,9 @@ def translateCmd
       | .bitVec _ =>
         bindDestToPtr tcBase tenvBase
 
+      | .null =>
+        bindDestToPtr tcBase tenvBase
+
       | _ => panic! "[Error] after translating expr type, expect REG/IMM but found something else"
     let (stms', ptrOpt, tc'', tenv'') :=
       match tenv'.get? dest.name with
@@ -470,8 +473,10 @@ def translateCmd
           bindDestToValue transVal tc' tenv'
 
       | none =>
-        -- dest is a new temp, so allocate a distinct slot for it.
-        bindDestToPtr tc' tenv'
+        -- dest is a new temp. If the source is already a register, keep it in
+        -- the value environment; allocating here inside loops grows the stack
+        -- for compiler-generated temporaries that never need an address.
+        bindDestToValue transVal tc' tenv'
 
     let destIsPtr := Option.isSome ptrOpt
 

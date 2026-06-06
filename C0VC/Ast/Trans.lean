@@ -39,6 +39,19 @@ def convertBinOp : C0VC.Ast.BinOp → Except String C0VC.ElabbedAst.BinOp
   | .land => .error "logical && found after elaboration"
   | .lor => .error "logical || found after elaboration"
 
+def convertAssignOp : C0VC.Ast.AssignOp → C0VC.ElabbedAst.AssignOp
+  | .assign => .assign
+  | .plusEq => .plusEq
+  | .subEq => .subEq
+  | .mulEq => .mulEq
+  | .divEq => .divEq
+  | .modEq => .modEq
+  | .bitAndEq => .bitAndEq
+  | .xorEq => .xorEq
+  | .bitOrEq => .bitOrEq
+  | .shlEq => .shlEq
+  | .shrEq => .shrEq
+
 mutual
 partial def convertMExpr (mexpr : C0VC.Ast.MarkedExpr) : Except String C0VC.ElabbedAst.MarkedExpr := do
   let node ← convertExpr mexpr.node
@@ -168,8 +181,10 @@ partial def convertStm : C0VC.Ast.Stm → Except String C0VC.ElabbedAst.Stm
       let init' ← init.mapM convertMExpr
       let value' ← convertMStm value
       .ok (.declare varName tau' init' value')
-  | .asop .. =>
-      .error "assignment operator found after elaboration"
+  | .asop lhs op value => do
+      let lhs' ← convertMLValue lhs
+      let value' ← convertMExpr value
+      .ok (.asop lhs' (convertAssignOp op) value')
   | .forLit .. =>
       .error "for loop found after elaboration"
   | .expr e => do

@@ -89,6 +89,10 @@ def tauOfBinOp : C0VC.TypedAst.BinOp → Tree.Tau
   | .neq => .bool
   | _ => .int
 
+def exprAlreadyMaterialized : Tree.Expr → Bool
+  | .const .. | .temp _ => true
+  | _ => false
+
 partial def translateExpr
   (senv : SEnv)
   (texpr : C0VC.TypedAst.TypedExpr)
@@ -291,8 +295,9 @@ partial def translateStm
         -- the rhs. This is esp. the case when the lvalue has calls/checks, e.g.
         -- A[f()] = A[g()] + 1 or p->x = h().
         let (cmdsLhs, lhsExpr, env', tc', lc') := translateLValueExpr senv lhs env tc lc
-        let (cmdsRhs, expr, env'', tc'', lc'') := translateExpr senv val env' tc' lc'
-        (cmdsLhs ++ cmdsRhs ++ [.store lhsExpr expr], env'', tc'', lc'')
+        let (checkTemp, tcCheck) := Temp.bumpAndCreate tc'
+        let (cmdsRhs, expr, env'', tc'', lc'') := translateExpr senv val env' tcCheck lc'
+        (cmdsLhs ++ [.move checkTemp lhsExpr] ++ cmdsRhs ++ [.store lhsExpr expr], env'', tc'', lc'')
 
   | .ifLit test thenBranch elseBranch =>
     let emitLabel (cmds : List Command) :=
@@ -378,8 +383,12 @@ partial def translateStm
     (cmdsInit ++ cmdsValue, env'.erase varName, tc''', lc''')
 
   | .expr mexpr =>
-    let (cmds, _, env', tc', lc') := translateExpr senv mexpr env tc lc
-    (cmds, env', tc', lc')
+    let (cmds, expr, env', tc', lc') := translateExpr senv mexpr env tc lc
+    if exprAlreadyMaterialized expr then
+      (cmds, env', tc', lc')
+    else
+      let (temp, tc'') := Temp.bumpAndCreate tc'
+      (cmds ++ [Tree.Command.move temp expr], env', tc'', lc')
 
   | .nop => ([], env, tc, lc)
 

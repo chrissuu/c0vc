@@ -1,10 +1,10 @@
 /-
 Elaborated AST Core Definitions
 
-This AST is the post-elaboration surface for later compiler phases. It omits
-syntax that should be desugared away before typechecking/lowering, such as
-assignment operators, for loops, increment/decrement, unary operators, short
-circuit operators, and typedef declarations.
+From the prev AST type, any syntax that should be desugared away before
+typechecking/lowering, such as for loops, increment/decrement, unary operators,
+short circuit operators, and typedef declarations are removed here. Compound
+assignment is kept until typechecking because lvalue materialization needs type info
 -/
 import C0VC.Utils.SrcSpan
 
@@ -29,6 +29,20 @@ inductive BinOp where
   | bitOr
   | shl
   | shr
+deriving Inhabited
+
+inductive AssignOp where
+  | assign
+  | plusEq
+  | subEq
+  | mulEq
+  | divEq
+  | modEq
+  | bitAndEq
+  | xorEq
+  | bitOrEq
+  | shlEq
+  | shrEq
 deriving Inhabited
 
 inductive Tau where
@@ -98,6 +112,7 @@ end
 mutual
 inductive Stm where
   | assign (lhs : MarkedLValue) (val : MarkedExpr)
+  | asop (lhs : MarkedLValue) (op : AssignOp) (value : MarkedExpr)
   | ifLit (test : MarkedExpr) (thenBranch : MarkedStm) (elseBranch : MarkedStm)
   | whileLit (test : MarkedExpr) (body : MarkedStm) (step : MarkedStm)
   | ret (valOpt : Option MarkedExpr)
@@ -151,6 +166,19 @@ def ppBinOp : BinOp → String
   | .bitOr => "|"
   | .shl => "<<"
   | .shr => ">>"
+
+def ppAssignOp : AssignOp → String
+  | .assign => "="
+  | .plusEq => "+="
+  | .subEq => "-="
+  | .mulEq => "*="
+  | .divEq => "/="
+  | .modEq => "%="
+  | .bitAndEq => "&="
+  | .xorEq => "^="
+  | .bitOrEq => "|="
+  | .shlEq => "<<="
+  | .shrEq => ">>="
 
 def ppTau : Tau → String
   | .string => "string"
@@ -228,6 +256,8 @@ mutual
 partial def ppStm : Stm → String
   | .assign lhs e =>
       s!"{ppMarkedLValue lhs} = {ppMarkedExpr e};"
+  | .asop lhs op e =>
+      s!"{ppMarkedLValue lhs} {ppAssignOp op} {ppMarkedExpr e};"
   | .ret valOpt =>
       match valOpt with
       | some e => s!"return {ppMarkedExpr e};"
@@ -359,6 +389,8 @@ mutual
 partial def ppStmRaw (indentLevel : Nat) : Stm → String
   | .assign lhs e =>
       s!"{spaces indentLevel}Assign({ppMarkedLValue lhs},\n{ppMarkedExprRaw (indentLevel + 1) e}\n{spaces indentLevel})"
+  | .asop lhs op e =>
+      s!"{spaces indentLevel}Asop({ppMarkedLValue lhs}, {ppAssignOp op},\n{ppMarkedExprRaw (indentLevel + 1) e}\n{spaces indentLevel})"
   | .ret valOpt =>
       match valOpt with
       | some e => s!"{spaces indentLevel}Ret(\n{ppMarkedExprRaw (indentLevel + 1) e}\n{spaces indentLevel})"

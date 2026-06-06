@@ -210,34 +210,6 @@ def assignOpToBinOp : AssignOp → Option BinOp
   | .shlEq => some .shl
   | .shrEq => some .shr
 
-abbrev StmWrap := MarkedStm → MarkedStm
-
--- handles stateful lvalues such as: A[f()] += x
--- naively elaborating this into A[f()] = A[f()] + x, would call f() twice.
-partial def materializeLValueIndices (tc : TempCounter) (mlv : MarkedLValue) :
-    TempCounter × StmWrap × MarkedLValue :=
-  match mlv.node with
-  | .var _ =>
-      (tc, id, mlv)
-  | .deref ptr =>
-      let (tc', wrap, ptr') := materializeLValueIndices tc ptr
-      (tc', wrap, { mlv with node := .deref ptr' })
-  | .dot struct field =>
-      let (tc', wrap, struct') := materializeLValueIndices tc struct
-      (tc', wrap, { mlv with node := .dot struct' field })
-  | .arrow structPtr field =>
-      let (tc', wrap, structPtr') := materializeLValueIndices tc structPtr
-      (tc', wrap, { mlv with node := .arrow structPtr' field })
-  | .arrAccess arr index =>
-      let (tc', wrapArr, arr') := materializeLValueIndices tc arr
-      let (temp, tc'') := Temp.bumpAndCreateNamed tc' "__asop_idx"
-      let tempName := s!"$c0vc_asop_idx_{temp.name}"
-      let tempExpr := mkElabExpr (.var tempName) index.span
-      let mlv' := { mlv with node := .arrAccess arr' tempExpr }
-      let wrap : StmWrap := fun body =>
-        wrapArr (mkElabStm (.declare tempName .int (some index) body) (spanCoverOpt index.span body.span))
-      (tc'', wrap, mlv')
-
 partial def elabMStm (env : Env) (tc : TempCounter) (mstm : MarkedStm) : Except String (TempCounter × MarkedStm) := do
   match mstm.node with
   | .assign lhs val => do
@@ -278,17 +250,15 @@ partial def elabMStm (env : Env) (tc : TempCounter) (mstm : MarkedStm) : Except 
     | none =>
       let value' ← elabMExpr env value
       .ok (tc, mkElabStm (.assign lhs' value') mstm.span)
-    | some binop =>
+    | some _ =>
       let value' ← elabMExpr env value
-      let (tc', wrap, lhs'') := materializeLValueIndices tc lhs'
-      let lhsExpr := markedLValueToExpr lhs''
-      let rhs := mkElabExpr (.binop binop lhsExpr value') mstm.span
-      .ok (tc', wrap (mkElabStm (.assign lhs'' rhs) mstm.span))
+      .ok (tc, mkElabStm (.asop lhs' op value') mstm.span)
   | .forLit init test update body =>
     let bodySpan := spanCoverOpt body.span update.span
     let whileSpan := spanCoverOpt test.span bodySpan
     let forSpan := spanCoverOpt init.span whileSpan
-    let desugaredWhile := mkElabStm (.whileLit test body update) whileSpan
+    let bodyWithUpdate := mkElabStm (.seq body update) bodySpan
+    let desugaredWhile := mkElabStm (.whileLit test bodyWithUpdate (mkElabStm .nop none)) whileSpan
     match init.node with
     | .declare varName tau init initBody =>
       let scopedFor := mkElabStm (.declare varName tau init (mkElabStm (.seq initBody desugaredWhile) forSpan)) forSpan
@@ -307,18 +277,12 @@ partial def elabMStm (env : Env) (tc : TempCounter) (mstm : MarkedStm) : Except 
     .ok (tc, mkElabStm (.error e') mstm.span)
   | .incr lhs =>
     let lhs' ← elabMLValue env lhs
-    let (tc', wrap, lhs'') := materializeLValueIndices tc lhs'
-    let lhsExpr := markedLValueToExpr lhs''
     let one := mkElabExpr (.intLit 1) mstm.span
-    let rhs := mkElabExpr (.binop .plus lhsExpr one) mstm.span
-    .ok (tc', wrap (mkElabStm (.assign lhs'' rhs) mstm.span))
+    .ok (tc, mkElabStm (.asop lhs' .plusEq one) mstm.span)
   | .decr lhs =>
     let lhs' ← elabMLValue env lhs
-    let (tc', wrap, lhs'') := materializeLValueIndices tc lhs'
-    let lhsExpr := markedLValueToExpr lhs''
     let one := mkElabExpr (.intLit 1) mstm.span
-    let rhs := mkElabExpr (.binop .sub lhsExpr one) mstm.span
-    .ok (tc', wrap (mkElabStm (.assign lhs'' rhs) mstm.span))
+    .ok (tc, mkElabStm (.asop lhs' .subEq one) mstm.span)
   | .annotation a => do
     let a' ←
       match a.node with
