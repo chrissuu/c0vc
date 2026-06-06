@@ -10,6 +10,12 @@ def convertTau : C0VC.Ast.Tau → Except String C0VC.ElabbedAst.Tau
   | .bool => .ok .bool
   | .void => .ok .void
   | .struct name => .ok (.struct name)
+  | .ptr tau => do
+      let tau' ← convertTau tau
+      .ok (.ptr tau')
+  | .array tau => do
+      let tau' ← convertTau tau
+      .ok (.array tau')
   | .typeName name =>
       .error s!"type name `{name}` found after elaboration"
 
@@ -89,6 +95,28 @@ partial def convertExpr : C0VC.Ast.Expr → Except String C0VC.ElabbedAst.Expr
 end
 
 mutual
+partial def convertMLValue (mlv : C0VC.Ast.MarkedLValue) : Except String C0VC.ElabbedAst.MarkedLValue := do
+  let node ← convertLValue mlv.node
+  .ok { node, span := mlv.span }
+
+partial def convertLValue : C0VC.Ast.LValue → Except String C0VC.ElabbedAst.LValue
+  | .var name => .ok (.var name)
+  | .deref ptr => do
+      let ptr' ← convertMLValue ptr
+      .ok (.deref ptr')
+  | .dot struct field => do
+      let struct' ← convertMLValue struct
+      .ok (.dot struct' field)
+  | .arrow structPtr field => do
+      let structPtr' ← convertMLValue structPtr
+      .ok (.arrow structPtr' field)
+  | .arrAccess arr index => do
+      let arr' ← convertMLValue arr
+      let index' ← convertMExpr index
+      .ok (.arrAccess arr' index')
+end
+
+mutual
 partial def convertMAnno (manno : C0VC.Ast.MarkedAnno) : Except String C0VC.ElabbedAst.MarkedAnno := do
   let node ← convertAnno manno.node
   .ok { node, span := manno.span }
@@ -114,9 +142,10 @@ partial def convertMStm (mstm : C0VC.Ast.MarkedStm) : Except String C0VC.Elabbed
   .ok { node, span := mstm.span }
 
 partial def convertStm : C0VC.Ast.Stm → Except String C0VC.ElabbedAst.Stm
-  | .assign varName val => do
+  | .assign lhs val => do
+      let lhs' ← convertMLValue lhs
       let val' ← convertMExpr val
-      .ok (.assign varName val')
+      .ok (.assign lhs' val')
   | .ifLit test thenBranch elseBranch => do
       let test' ← convertMExpr test
       let thenBranch' ← convertMStm thenBranch

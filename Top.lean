@@ -160,7 +160,7 @@ private def runFrontend (cfg : CliConfig) (infile : String) :
                           IO.println (C0VC.LLVM.Tree.Print.ppProgram treeProgram)
                         if cfg.dumpTreeRaw then
                           IO.println (C0VC.LLVM.Tree.Print.ppProgramRaw treeProgram)
-                        let llvmIR := C0VC.LLVM.Codegen.translate treeProgram
+                        let llvmIR := C0VC.LLVM.Codegen.translateWithConfig { safetyChecks := not cfg.unsafeMode } treeProgram
                         if cfg.dumpIrRaw then
                           IO.println (C0VC.LLVM.IR.Print.ppProgramRaw llvmIR)
                         pure (.ok (some llvmIR))

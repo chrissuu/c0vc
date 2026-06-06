@@ -13,6 +13,7 @@ Author: Chris Su <chrjs@cmu.edu>
 import Std
 import C0VC.Token
 import C0VC.Utils.SrcSpan
+import Std.Data.HashSet
 
 namespace C0VC.Lexer
 
@@ -61,6 +62,8 @@ def tokenKindOptionOfString : String → Option TokenKind
   | ";" => some .semicolon
   | "," => some .comma
   | "?" => some .question
+  | "." => some .dot
+  | "->" => some .arrow
   | "=" => some .assign
   | "+=" => some .plusEq
   | "-=" => some .subEq
@@ -254,9 +257,9 @@ def staticTokenLexemes : List String :=
     "/*@", "//@", "@*/",
     "<<=", ">>=",
     "+=", "-=", "*=", "/=", "%=", "&=", "^=", "|=",
-    "<=", ">=", "==", "!=", "&&", "||", "<<", ">>", "++", "--",
+    "<=", ">=", "==", "!=", "&&", "||", "<<", ">>", "++", "--", "->",
     "(", ")", "{", "}", "[", "]", ":", ";", ",", "?",
-    "=", "+", "-", "*", "/", "%", "<", ">", "&", "^", "|", "!", "~", "#"
+    "=", "+", "-", "*", "/", "%", "<", ">", "&", "^", "|", "!", "~", "#", "."
   ]
 
 def matchStaticToken (s : String.Slice) (_ : Nat) : Option String.Slice :=
@@ -330,7 +333,62 @@ def toTokenKind? (matched : String.Slice) : Option TokenKind :=
   else
     tokenKindOptionOfString lex
 
-partial def munch (fileName : String) (body : String) : Except String (List Token) :=
+def classifyTypedefToken (typedefs : Std.HashSet String) (tok : Token) : Token :=
+  match tok.kind with
+  | .ident name =>
+      if typedefs.contains name then
+        { tok with kind := .typeIdent name }
+      else
+        tok
+  | _ => tok
+
+def finishTypedefTokens (typedefs : Std.HashSet String) (tokensRev : List Token) :
+    List Token × Std.HashSet String :=
+  let tokens := tokensRev.reverse
+  let aliasTok? := tokensRev.find? (fun tok =>
+    match tok.kind with
+    | .ident _ => true
+    | _ => false)
+  let sameSpan (lhs rhs : Token) : Bool :=
+    lhs.span == rhs.span
+  let classify (tok : Token) : Token :=
+    match aliasTok? with
+    | some aliasTok =>
+        if sameSpan tok aliasTok then
+          tok
+        else
+          classifyTypedefToken typedefs tok
+    | none => classifyTypedefToken typedefs tok
+  let tokens' := tokens.map classify
+  match aliasTok? with
+  | some aliasTok =>
+      match aliasTok.kind with
+      | .ident alias => (tokens', typedefs.insert alias)
+      | _ => (tokens', typedefs)
+  | none => (tokens', typedefs)
+
+partial def classifyTypedefs (tokens : List Token) : List Token :=
+  let rec go (typedefs : Std.HashSet String) (acc : List Token) (rest : List Token) : List Token :=
+    match rest with
+    | [] => acc.reverse
+    | tok :: toks =>
+        match tok.kind with
+        | .kwTypedef =>
+            let rec collect (bufRev : List Token) : List Token → List Token × List Token
+              | [] => (bufRev, [])
+              | t :: ts =>
+                  if t.kind == .semicolon then
+                    (t :: bufRev, ts)
+                  else
+                    collect (t :: bufRev) ts
+            let (typedefRev, rest') := collect [tok] toks
+            let (typedefTokens, typedefs') := finishTypedefTokens typedefs typedefRev
+            go typedefs' (typedefTokens.reverse ++ acc) rest'
+        | _ =>
+            go typedefs (classifyTypedefToken typedefs tok :: acc) toks
+  go {} [] tokens
+
+partial def munchRaw (fileName : String) (body : String) : Except String (List Token) :=
   let rec go (s : String.Slice) (line col : Nat) (acc : List Token) : Except String (List Token) :=
     if s.isEmpty then
       let loc := SrcLoc.mk line col
@@ -366,5 +424,9 @@ partial def munch (fileName : String) (body : String) : Except String (List Toke
             | none =>
               .error s!"lexical error at {fileName}:{line}:{col}: malformed token `{matched.toString}`"
   go body.toSlice 1 1 []
+
+def munch (fileName : String) (body : String) : Except String (List Token) := do
+  let tokens ← munchRaw fileName body
+  .ok (classifyTypedefs tokens)
 
 end C0VC.Lexer

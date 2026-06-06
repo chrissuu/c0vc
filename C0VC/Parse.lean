@@ -42,8 +42,18 @@ instance : Inhabited (P UnOp) where
 instance : Inhabited (P AssignOp) where
   default := pure .assign
 
+instance : Inhabited (P (MarkedExpr → MarkedExpr)) where
+  default := pure id
+
 def mkExpr (node : Expr) : MarkedExpr :=
   { node := node, span := none }
+
+structure ParsedLValue where
+  lvalue : MarkedLValue
+  startsWithBareDeref : Bool
+
+instance : Inhabited (P ParsedLValue) where
+  default := pure { lvalue := { node := .var "", span := none }, startsWithBareDeref := false }
 
 -- Consume one token and decode its `TokenKind` with `f`.
 def satisfyKind (f : Lexer.TokenKind -> Option a) : P a :=
@@ -74,6 +84,8 @@ def kwReturn : P Unit := expectKind (fun | .kwReturn => true | _ => false)
 def eofTok : P Unit := expectKind (fun | .eof => true | _ => false)
 def qmark : P Unit := expectKind (fun | .question => true | _ => false)
 def colon : P Unit := expectKind (fun | .colon => true | _ => false)
+def lBracket : P Unit := expectKind (fun | .lBracket => true | _ => false)
+def rBracket : P Unit := expectKind (fun | .rBracket => true | _ => false)
 
 def spanFromTokenBounds (startTok endTok : Tok) : SrcSpan :=
   { startLoc := startTok.span.startLoc
@@ -99,6 +111,11 @@ def withConsumedSpan (p : P a) : P (a × Option SrcSpan) := do
 def parseIdent : P String :=
   satisfyKind (fun
     | .ident name => some name
+    | _ => none)
+
+def parseTypeIdent : P String :=
+  satisfyKind (fun
+    | .typeIdent name => some name
     | _ => none)
 
 def hexCharToNat (c : Char) : Nat :=
@@ -137,11 +154,69 @@ def parseBoolLit : P MarkedExpr :=
     | .kwFalse => some (mkExpr .falseLit)
     | _ => none)
 
+def parseCharLit : P MarkedExpr :=
+  satisfyKind (fun
+    | .charLit c => some (mkExpr (.charLit c))
+    | _ => none)
+
+def parseStringLit : P MarkedExpr :=
+  satisfyKind (fun
+    | .stringLit s => some (mkExpr (.stringLit s))
+    | _ => none)
+
+def parseNullLit : P MarkedExpr :=
+  satisfyKind (fun
+    | .kwNull => some (mkExpr .null)
+    | _ => none)
+
+def parseResultExpr : P MarkedExpr :=
+  satisfyKind (fun
+    | .result => some (mkExpr .result)
+    | _ => none)
+
+def parseHastagExpr : P MarkedExpr :=
+  satisfyKind (fun
+    | .hastag => some (mkExpr .hastag)
+    | _ => none)
+
 def parseVar : P MarkedExpr := do
   let (name, sp) ← withConsumedSpan parseIdent
   pure { node := .var name, span := sp }
 
 mutual
+partial def parseTauBase : P Tau :=
+  (satisfyKind (fun
+    | .kwInt => some .int
+    | .kwBool => some .bool
+    | .kwChar => some .char
+    | .kwString => some .string
+    | .kwVoid => some .void
+    | _ => none))
+  <|>
+  (do
+    let _ ← expectKindTokMsg (only .kwStruct) "expected 'struct'"
+    let name ← parseIdent
+    pure (.struct name))
+  <|>
+  (do
+    let name ← parseTypeIdent
+    pure (.typeName name))
+
+partial def parseTauSuffix : P (Tau → Tau) :=
+  (do
+    let _ ← expectKindTokMsg (only .mul) "expected '*'"
+    pure Tau.ptr)
+  <|>
+  (do
+    let _ ← expectKindTokMsg (only .lBracket) "expected '['"
+    let _ ← expectKindTokMsg (only .rBracket) "expected ']'"
+    pure Tau.array)
+
+partial def parseTau : P Tau := do
+  let base ← parseTauBase
+  let suffixesRev ← Parser.foldl (fun acc suffix => suffix :: acc) [] parseTauSuffix
+  pure (suffixesRev.reverse.foldl (fun tau suffix => suffix tau) base)
+
 partial def parseParenExpr : P MarkedExpr := do
   let lTok ← expectKindTokMsg (fun | .lParen => true | _ => false) "expected '('"
   let e ← parseExpr
@@ -150,16 +225,77 @@ partial def parseParenExpr : P MarkedExpr := do
     span := some (spanFromTokenBounds lTok rTok)
   }
 
-partial def parseAtom : P MarkedExpr :=
+partial def parseAllocExpr : P MarkedExpr := do
+  let startTok ← expectKindTokMsg (only .kwAlloc) "expected 'alloc'"
+  let _ ← expectKindTokMsg (only .lParen) "expected '(' after alloc"
+  let tau ← parseTau
+  let endTok ← expectKindTokMsg (only .rParen) "expected ')' after alloc type"
+  pure { node := .alloc tau, span := some (spanFromTokenBounds startTok endTok) }
+
+partial def parseAllocArrayExpr : P MarkedExpr := do
+  let startTok ← expectKindTokMsg (only .kwAllocArray) "expected 'alloc_array'"
+  let _ ← expectKindTokMsg (only .lParen) "expected '(' after alloc_array"
+  let tau ← parseTau
+  let _ ← expectKindTokMsg (only .comma) "expected ',' after alloc_array type"
+  let size ← parseExpr
+  let endTok ← expectKindTokMsg (only .rParen) "expected ')' after alloc_array size"
+  pure { node := .allocArray tau size, span := some (spanFromTokenBounds startTok endTok) }
+
+partial def parseLengthExpr : P MarkedExpr := do
+  let startTok ← expectKindTokMsg (only .length) "expected '\\length'"
+  let _ ← expectKindTokMsg (only .lParen) "expected '(' after \\length"
+  let arrayLike ← parseExpr
+  let endTok ← expectKindTokMsg (only .rParen) "expected ')' after \\length argument"
+  pure { node := .length arrayLike, span := some (spanFromTokenBounds startTok endTok) }
+
+partial def parsePrimary : P MarkedExpr :=
   first [
     parseParenExpr,
     parseHexLit,
     parseIntLit,
     parseBoolLit,
-    parseFCall,
+    parseCharLit,
+    parseStringLit,
+    parseNullLit,
+    parseResultExpr,
+    parseHastagExpr,
+    parseAllocArrayExpr,
+    parseAllocExpr,
+    parseLengthExpr,
     parseVar,
     throwUnexpectedWithMessage none "expected expression atom"
   ]
+
+partial def parsePostfixOp : P (MarkedExpr → MarkedExpr) :=
+  (do
+    let _ ← expectKindTokMsg (only .lParen) "expected '('"
+    let args ← parseArgs
+    let _ ← expectKindTokMsg (only .rParen) "expected ')'"
+    pure (fun base =>
+      match base.node with
+      | .var fname => mkExpr (.call fname args)
+      | _ => base))
+  <|>
+  (do
+    let _ ← expectKindTokMsg (only .dot) "expected '.'"
+    let field ← parseIdent
+    pure (fun base => mkExpr (.dot base field)))
+  <|>
+  (do
+    let _ ← expectKindTokMsg (only .arrow) "expected '->'"
+    let field ← parseIdent
+    pure (fun base => mkExpr (.arrow base field)))
+  <|>
+  (do
+    let _ ← expectKindTokMsg (only .lBracket) "expected '['"
+    let index ← parseExpr
+    let _ ← expectKindTokMsg (only .rBracket) "expected ']'"
+    pure (fun base => mkExpr (.arrAccess base index)))
+
+partial def parseAtom : P MarkedExpr := do
+  let base ← parsePrimary
+  let opsRev ← Parser.foldl (fun acc op => op :: acc) [] parsePostfixOp
+  pure (opsRev.reverse.foldl (fun acc op => op acc) base)
 
 partial def parseUnOp : P UnOp :=
   satisfyKind (fun
@@ -243,10 +379,17 @@ partial def parseAssignOp : P AssignOp :=
     | _ => none)
 
 partial def parseUnary : P MarkedExpr := do
-  let opsRev ← Parser.foldl (fun acc op => op :: acc) [] parseUnOp
+  let opsRev ← Parser.foldl (fun acc op => op :: acc) [] <|
+    (do
+      let op ← parseUnOp
+      pure (fun expr => mkExpr (.unop op expr)))
+    <|>
+    (do
+      let _ ← expectKindTokMsg (only .mul) "expected '*'"
+      pure (fun expr => mkExpr (.deref expr)))
   let ops := opsRev.reverse
   let base ← parseAtom
-  pure <| List.foldr (fun op acc => mkExpr (.unop op acc)) base ops
+  pure <| List.foldr (fun op acc => op acc) base ops
 
 partial def parseLeftAssoc (term : P MarkedExpr) (op : P BinOp) : P MarkedExpr := do
   let lhs ← term
@@ -327,25 +470,58 @@ partial def parseExpr : P MarkedExpr :=
 end
 
 
--- <lv> ::= <vid> | <lv> . <fid> | <lv> -> <fid>
--- | * <lv> | <lv> [ <exp> ]
-partial def parseLValueName : P String :=
-  parseIdent
+mutual
+partial def parseLValueBase : P ParsedLValue :=
+  (do
+    let (name, sp) ← withConsumedSpan parseIdent
+    pure { lvalue := { node := .var name, span := sp }, startsWithBareDeref := false })
   <|>
   (do
     let _ ← expectKindTokMsg (only .lParen) "expected '('"
-    let name ← parseLValueName
+    let lhs ← parseLValueExpr
     let _ ← expectKindTokMsg (only .rParen) "expected ')'"
-    pure name)
+    pure { lvalue := lhs.lvalue, startsWithBareDeref := false })
+  <|>
+  (do
+    let _ ← expectKindTokMsg (only .mul) "expected '*'"
+    let lhs ← parseLValueExpr
+    pure { lvalue := { node := .deref lhs.lvalue, span := none }, startsWithBareDeref := true })
 
-def parseLValue : P (String × Option SrcSpan) :=
-  withConsumedSpan parseLValueName
+partial def parseLValuePostfixOp : P (MarkedLValue → MarkedLValue) :=
+  (do
+    let _ ← expectKindTokMsg (only .dot) "expected '.'"
+    let field ← parseIdent
+    pure (fun base => { node := .dot base field, span := none }))
+  <|>
+  (do
+    let _ ← expectKindTokMsg (only .arrow) "expected '->'"
+    let field ← parseIdent
+    pure (fun base => { node := .arrow base field, span := none }))
+  <|>
+  (do
+    let _ ← expectKindTokMsg (only .lBracket) "expected '['"
+    let index ← parseExpr
+    let _ ← expectKindTokMsg (only .rBracket) "expected ']'"
+    pure (fun base => { node := .arrAccess base index, span := none }))
+
+partial def parseLValueExpr : P ParsedLValue := do
+  let base ← parseLValueBase
+  let opsRev ← Parser.foldl (fun acc op => op :: acc) [] parseLValuePostfixOp
+  pure { base with lvalue := opsRev.reverse.foldl (fun acc op => op acc) base.lvalue }
+end
+
+def parseLValue : P (ParsedLValue × Option SrcSpan) :=
+  withConsumedSpan parseLValueExpr
 
 def parseIncr : P MarkedStm := do
-  let (varName, varSpan) ← parseLValue
+  let (lhs, varSpan) ← parseLValue
+  if lhs.startsWithBareDeref then
+    throwUnexpectedWithMessage none "'*x++' is not valid syntax; write '(*x)++' if the dereference is the lvalue"
   let incrTok ← expectKindTokMsg (only .incr) "expected '++' after identifier"
 
-  pure { node := .incr varName
+  let node :=
+    .incr lhs.lvalue
+  pure { node := node
        , span :=
           match varSpan with
           | some sp => some { startLoc := sp.startLoc, endLoc := incrTok.span.endLoc, fileName := sp.fileName }
@@ -353,9 +529,15 @@ def parseIncr : P MarkedStm := do
        }
 
 def parseDecr : P MarkedStm := do
-  let (varName, varSpan) ← parseLValue
+  let (lhs, varSpan) ← parseLValue
+
+  -- this *x-- (and its variations) is slightly ambiguous due to binding, so we reject this form
+  if lhs.startsWithBareDeref then
+    throwUnexpectedWithMessage none "'*x--' is not valid syntax; write '(*x)--' if the dereference is the lvalue"
   let decrTok ← expectKindTokMsg (only .decr) "expected '++' after identifier"
-  pure { node := .decr varName
+  let node :=
+    .decr lhs.lvalue
+  pure { node := node
        , span :=
           match varSpan with
           | some sp => some { startLoc := sp.startLoc, endLoc := decrTok.span.endLoc, fileName := sp.fileName }
@@ -371,26 +553,18 @@ def parseReturnStm : P MarkedStm := do
        }
 
 def parseAssignCore : P MarkedStm := do
-  let (varName, varSpan) ← parseLValue
+  let (lhs, varSpan) ← parseLValue
   let op ← parseAssignOp
   let rhs ← parseExpr
   match op with
-  | .assign => pure { node := .assign varName rhs, span := varSpan }
-  | _ => pure { node := .asop varName op rhs, span := varSpan }
+  | .assign =>
+      pure { node := .assign lhs.lvalue rhs, span := varSpan }
+  | _ =>
+      pure { node := .asop lhs.lvalue op rhs, span := varSpan }
 
 def parseExprCore : P MarkedStm := do
   let (e, exprSpan) ← withConsumedSpan parseExpr
   pure { node := .expr e, span := exprSpan }
-
-def parseTau : P Tau :=
-  satisfyKind (fun
-    | .kwInt => some .int
-    | .kwBool => some .bool
-    | .kwChar => some .char
-    | .kwString => some .string
-    | .kwVoid => some .void
-    | .ident name => some (.typeName name)
-    | _ => none)
 
 def parseVarDefnCore : P MarkedStm := do
   let (tau, tauSpan) ← withConsumedSpan parseTau
@@ -574,6 +748,26 @@ def parseTypedef : P GDecl := do
   let _ ← expectKindTokMsg (only .semicolon) "expected ';' after typedef declaration"
   pure (.typedef tau aliasIdent)
 
+def parseField : P Field := do
+  let tau ← parseTau
+  let fieldName ← parseIdent
+  let _ ← expectKindTokMsg (only .semicolon) "expected ';' after struct field"
+  pure (tau, fieldName)
+
+def parseStructDecl : P GDecl := do
+  let _ ← expectKindTokMsg (only .kwStruct) "expected 'struct'"
+  let name ← parseIdent
+  (do
+    let _ ← expectKindTokMsg (only .lBrace) "expected '{' in struct definition"
+    let fieldsRev ← Parser.foldl (fun acc field => field :: acc) [] parseField
+    let _ ← expectKindTokMsg (only .rBrace) "expected '}' after struct fields"
+    let _ ← expectKindTokMsg (only .semicolon) "expected ';' after struct definition"
+    pure (.sdecl name fieldsRev.reverse))
+  <|>
+  (do
+    let _ ← expectKindTokMsg (only .semicolon) "expected ';' after struct declaration"
+    pure (.sdecl name []))
+
 def parseParam : P Param := do
   let tau ← parseTau
   let paramName ← parseIdent
@@ -618,7 +812,7 @@ def parseFdefn : P GDecl := do
 
 def parseGdecl : P GDecl :=
   withErrorMessage "while parsing global declaration" <|
-    (parseTypedef <|> parseFdefn <|> parseFdecl)
+    (parseTypedef <|> parseStructDecl <|> parseFdefn <|> parseFdecl)
 
 def runParser {a : Type} (p : P a) (tokens : List Tok) : Except String a :=
   -- Accept optional lexer-emitted EOF token, then require end of token stream.

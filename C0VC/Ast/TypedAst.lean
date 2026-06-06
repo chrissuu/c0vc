@@ -35,6 +35,19 @@ structure TypedExpr where
 end
 
 mutual
+inductive LValue where
+  | var (name : String)
+  | deref (ptr : TypedLValue)
+  | dot (struct : TypedLValue) (field : String)
+  | arrow (structPtr : TypedLValue) (field : String)
+  | arrAccess (arr : TypedLValue) (index : TypedExpr)
+
+structure TypedLValue where
+  node : LValue
+  tau : Tau
+end
+
+mutual
 inductive Anno where
   | requires (precondition : TypedExpr)
   | ensures (postcondition : TypedExpr)
@@ -44,7 +57,7 @@ end
 
 mutual
 inductive Stm where
-  | assign (varName : String) (val : TypedExpr)
+  | assign (lhs : TypedLValue) (val : TypedExpr)
   | ifLit (test : TypedExpr) (thenBranch : Stm) (elseBranch : Stm)
   | whileLit (test : TypedExpr) (body : Stm)
   | ret (valOpt : Option TypedExpr)
@@ -115,6 +128,18 @@ partial def ppTypedExpr (e : TypedExpr) : String :=
 end
 
 mutual
+partial def ppLValue : LValue → String
+  | .var id => id
+  | .deref ptr => s!"*({ppTypedLValue ptr})"
+  | .dot struct field => s!"{ppTypedLValue struct}.{field}"
+  | .arrow structPtr field => s!"{ppTypedLValue structPtr}->{field}"
+  | .arrAccess arr index => s!"{ppTypedLValue arr}[{ppTypedExpr index}]"
+
+partial def ppTypedLValue (lv : TypedLValue) : String :=
+  s!"{ppLValue lv.node}:{ppTau lv.tau}"
+end
+
+mutual
 def ppAnno : Anno → String
   | .requires precondition => s!"//@requires ({ppTypedExpr precondition})"
   | .ensures postcondition => s!"//@ensures ({ppTypedExpr postcondition})"
@@ -124,8 +149,8 @@ end
 
 mutual
 partial def ppStm : Stm → String
-  | .assign id e =>
-      s!"{id} = {ppTypedExpr e};"
+  | .assign lhs e =>
+      s!"{ppTypedLValue lhs} = {ppTypedExpr e};"
   | .ret valOpt =>
       match valOpt with
       | some e => s!"return {ppTypedExpr e};"
@@ -232,8 +257,8 @@ def ppAnnoRaw (indentLevel : Nat) : Anno → String
       s!"{spaces indentLevel}LoopInvariant(\n{ppTypedExprRaw (indentLevel + 1) e}\n{spaces indentLevel})"
 
 partial def ppStmRaw (indentLevel : Nat) : Stm → String
-  | .assign id e =>
-      s!"{spaces indentLevel}Assign({id},\n{ppTypedExprRaw (indentLevel + 1) e}\n{spaces indentLevel})"
+  | .assign lhs e =>
+      s!"{spaces indentLevel}Assign({ppTypedLValue lhs},\n{ppTypedExprRaw (indentLevel + 1) e}\n{spaces indentLevel})"
   | .ret valOpt =>
       match valOpt with
       | some e => s!"{spaces indentLevel}Ret(\n{ppTypedExprRaw (indentLevel + 1) e}\n{spaces indentLevel})"

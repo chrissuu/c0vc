@@ -60,6 +60,8 @@ inductive Tau where
   | void
   | typeName (name : String)
   | struct (name : String)
+  | ptr (tau : Tau)
+  | array (tau : Tau)
 deriving Inhabited
 
 mutual
@@ -95,6 +97,19 @@ structure MarkedExpr where
 end
 
 mutual
+inductive LValue where
+  | var (name : String)
+  | deref (ptr : MarkedLValue)
+  | dot (struct : MarkedLValue) (field : String)
+  | arrow (structPtr : MarkedLValue) (field : String)
+  | arrAccess (arr : MarkedLValue) (index : MarkedExpr)
+
+structure MarkedLValue where
+  node : LValue
+  span : Option SrcSpan
+end
+
+mutual
 inductive Anno where
   | requires (precondition : MarkedExpr)
   | ensures (postcondition : MarkedExpr)
@@ -109,7 +124,7 @@ end
 
 mutual
 inductive Stm where
-  | assign (varName : String) (val : MarkedExpr)
+  | assign (lhs : MarkedLValue) (val : MarkedExpr)
   -- this encapsulates both ite and if statements. If no elseBranch is needed, the elseBranch is simply Nop
   | ifLit (test : MarkedExpr) (thenBranch : MarkedStm) (elseBranch : MarkedStm)
   | whileLit (test : MarkedExpr) (body : MarkedStm) (step : MarkedStm)
@@ -117,7 +132,7 @@ inductive Stm where
   | ret (valOpt : Option MarkedExpr)
   | seq (first : MarkedStm) (rest : MarkedStm)
   | declare (varName : String) (type : Tau) (init : Option MarkedExpr) (body : MarkedStm)
-  | asop (varName : String) (op : AssignOp) (value : MarkedExpr)
+  | asop (lhs : MarkedLValue) (op : AssignOp) (value : MarkedExpr)
   | forLit (init : MarkedStm) (test : MarkedExpr) (update : MarkedStm) (body : MarkedStm)
   -- handles well-typed lines of the form [MarkedExpr];
   | expr : MarkedExpr -> Stm
@@ -126,8 +141,8 @@ inductive Stm where
   | nop
   | annotation (a : MarkedAnno)
 
-  | incr (varName : String)
-  | decr (varName : String)
+  | incr (lhs : MarkedLValue)
+  | decr (lhs : MarkedLValue)
 deriving Inhabited
 
 structure MarkedStm where
@@ -196,6 +211,8 @@ def ppTau : Tau → String
   | .void => "void"
   | .typeName t => t
   | .struct s => s!"struct {s}"
+  | .ptr tau => s!"{ppTau tau}*"
+  | .array tau => s!"{ppTau tau}[]"
 
 private def indent (str : String) : String :=
   str.splitOn "\n"
@@ -243,6 +260,18 @@ partial def ppMarkedExpr (e : MarkedExpr) : String :=
 end
 
 mutual
+partial def ppLValue : LValue → String
+  | .var id => id
+  | .deref ptr => s!"*({ppMarkedLValue ptr})"
+  | .dot struct field => s!"{ppMarkedLValue struct}.{field}"
+  | .arrow structPtr field => s!"{ppMarkedLValue structPtr}->{field}"
+  | .arrAccess arr index => s!"{ppMarkedLValue arr}[{ppMarkedExpr index}]"
+
+partial def ppMarkedLValue (lv : MarkedLValue) : String :=
+  ppLValue lv.node
+end
+
+mutual
 def ppAnno : Anno → String
   | .requires precondition => s!"//@requires ({ppMarkedExpr precondition})"
   | .ensures postcondition => s!"//@ensures ({ppMarkedExpr postcondition})"
@@ -255,8 +284,8 @@ end
 
 mutual
 partial def ppStm : Stm → String
-  | .assign id e =>
-      s!"{id} = {ppMarkedExpr e};"
+  | .assign lhs e =>
+      s!"{ppMarkedLValue lhs} = {ppMarkedExpr e};"
   | .ret valOpt =>
       match valOpt with
       | some e => s!"return {ppMarkedExpr e};"
@@ -293,12 +322,12 @@ partial def ppStm : Stm → String
       s!"while ({ppMarkedExpr cond}) \{\n{indent bodyStr}\n}"
   | .forLit init cond update body =>
       s!"for ({trimTrailingSemicolon (ppMarkedStm init)}; {ppMarkedExpr cond}; {trimTrailingSemicolon (ppMarkedStm update)}) \{\n{indent (ppMarkedStm body)}\n}"
-  | .asop id op e =>
-      s!"{id} {ppAssignOp op} {ppMarkedExpr e};"
+  | .asop lhs op e =>
+      s!"{ppMarkedLValue lhs} {ppAssignOp op} {ppMarkedExpr e};"
 
   | .annotation a => s!"{ppMarkedAnno a}"
-  | .incr id => s!"{id}++"
-  | .decr id => s!"{id}--"
+  | .incr lhs => s!"{ppMarkedLValue lhs}++"
+  | .decr lhs => s!"{ppMarkedLValue lhs}--"
 
 partial def ppMarkedStm (s : MarkedStm) : String :=
   ppStm s.node
@@ -342,8 +371,8 @@ def ppProgram (program : Program) : String :=
 
 mutual
 partial def ppStmRaw (indentLevel : Nat) : Stm → String
-  | .assign id e =>
-      s!"{spaces indentLevel}Assign({id}, {ppMarkedExpr e})"
+  | .assign lhs e =>
+      s!"{spaces indentLevel}Assign({ppMarkedLValue lhs}, {ppMarkedExpr e})"
   | .ret valOpt =>
       let retStr := match valOpt with | some e => ppMarkedExpr e | none => "None"
       s!"{spaces indentLevel}Return({retStr})"
@@ -362,8 +391,8 @@ partial def ppStmRaw (indentLevel : Nat) : Stm → String
       s!"{spaces indentLevel}While({ppMarkedExpr cond},\n{ppMarkedStmRaw (indentLevel + 1) body},\n{ppMarkedStmRaw (indentLevel + 1) step}\n{spaces indentLevel})"
   | .forLit init cond update body =>
       s!"{spaces indentLevel}For(\n{ppMarkedStmRaw (indentLevel + 1) init},\n{spaces (indentLevel + 1)}{ppMarkedExpr cond},\n{ppMarkedStmRaw (indentLevel + 1) update},\n{ppMarkedStmRaw (indentLevel + 1) body}\n{spaces indentLevel})"
-  | .asop id op e =>
-      s!"{spaces indentLevel}Asop({id}, {ppAssignOp op}, {ppMarkedExpr e})"
+  | .asop lhs op e =>
+      s!"{spaces indentLevel}Asop({ppMarkedLValue lhs}, {ppAssignOp op}, {ppMarkedExpr e})"
   | .assert test =>
       s!"{spaces indentLevel}Assert({ppMarkedExpr test})"
   | .error e =>
@@ -371,10 +400,10 @@ partial def ppStmRaw (indentLevel : Nat) : Stm → String
   | .annotation a =>
       s!"{spaces indentLevel}Annotation({ppMarkedAnno a})"
 
-  | .incr id =>
-      s!"{spaces indentLevel}Incr({id})"
-  | .decr id =>
-      s!"{spaces indentLevel}Decr({id})"
+  | .incr lhs =>
+      s!"{spaces indentLevel}Incr({ppMarkedLValue lhs})"
+  | .decr lhs =>
+      s!"{spaces indentLevel}Decr({ppMarkedLValue lhs})"
 
 partial def ppMarkedStmRaw (indentLevel : Nat) (stm : MarkedStm) : String :=
   ppStmRaw indentLevel stm.node

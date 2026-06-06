@@ -6,6 +6,7 @@ namespace C0VC.Token
 
 inductive TokenKind where
   | ident (name : String)
+  | typeIdent (name : String)
   | intLit (value : Int)
   | hexLit (value : String)
   | stringLit (value : String)
@@ -38,6 +39,7 @@ inductive TokenKind where
   | lBracket | rBracket -- []
   | colon | semicolon   -- :;
   | comma | question    -- ,?
+  | dot | arrow         -- . ->
 
   -- Assignment Operators
   | assign
@@ -103,6 +105,7 @@ namespace Print
 
 def ppTokenKind : TokenKind → String
   | .ident name => s!"ident({name})"
+  | .typeIdent name => s!"typeIdent({name})"
   | .intLit value => s!"intLit({value})"
   | .hexLit value => s!"hexLit({value})"
   | .stringLit value => s!"stringLit(\"{value}\")"
@@ -145,6 +148,8 @@ def ppTokenKind : TokenKind → String
   | .semicolon => "semicolon"
   | .comma => "comma"
   | .question => "question"
+  | .dot => "dot"
+  | .arrow => "arrow"
   | .assign=> "assign"
   | .plusEq => "plusEq"
   | .subEq => "subEq"

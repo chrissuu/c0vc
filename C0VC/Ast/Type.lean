@@ -210,6 +210,9 @@ def binopArgTypesOk (op : BinOp) (lhs rhs : Tau) : Bool :=
 def mkTExpr (node : C0VC.TypedAst.Expr) (tau : Tau) : C0VC.TypedAst.TypedExpr :=
   { node := node, tau := tau }
 
+def mkTLValue (node : C0VC.TypedAst.LValue) (tau : Tau) : C0VC.TypedAst.TypedLValue :=
+  { node := node, tau := tau }
+
 def lookupStructFields (senv : SEnv) (name : String) : Except String (List Field) :=
   match senv.get? name with
   | some fields => .ok fields
@@ -328,6 +331,40 @@ partial def tcExpr (senv : SEnv) (fenv : FEnv) (resultType : Option Tau) (mexpr 
     | .array tau => .ok (mkTExpr (.arrAccess tarr tindex) tau)
     | _ => .error "array access operand must have array type"
 
+partial def tcLValue (senv : SEnv) (fenv : FEnv) (resultType : Option Tau) (mlv : MarkedLValue) (venv : VEnv) :
+    Except String C0VC.TypedAst.TypedLValue := do
+  match mlv.node with
+  | .var name =>
+      let info ← tcVarReadable venv name
+      .ok (mkTLValue (.var name) info.varType)
+  | .deref ptr =>
+      let tptr ← tcLValue senv fenv resultType ptr venv
+      match tptr.tau with
+      | .ptr tau => .ok (mkTLValue (.deref tptr) tau)
+      | _ => .error "dereference lvalue operand must have pointer type"
+  | .dot struct field =>
+      let tstruct ← tcLValue senv fenv resultType struct venv
+      match tstruct.tau with
+      | .struct name =>
+          let fieldTau ← lookupField senv name field
+          .ok (mkTLValue (.dot tstruct field) fieldTau)
+      | _ => .error "left side of field lvalue access must have struct type"
+  | .arrow structPtr field =>
+      let tstructPtr ← tcLValue senv fenv resultType structPtr venv
+      match tstructPtr.tau with
+      | .ptr (.struct name) =>
+          let fieldTau ← lookupField senv name field
+          .ok (mkTLValue (.arrow tstructPtr field) fieldTau)
+      | _ => .error "left side of arrow lvalue access must have pointer-to-struct type"
+  | .arrAccess arr index =>
+      let tarr ← tcLValue senv fenv resultType arr venv
+      let tindex ← tcExpr senv fenv resultType index venv
+      if not (tauEq tindex.tau .int) then
+        .error "array index must have type int"
+      match tarr.tau with
+      | .array tau => .ok (mkTLValue (.arrAccess tarr tindex) tau)
+      | _ => .error "array lvalue access operand must have array type"
+
 partial def tcCallArgs (senv : SEnv) (fenv : FEnv) (resultType : Option Tau) (fname : String)
     (args : List MarkedExpr) (params : List Param) (venv : VEnv) :
     Except String (List C0VC.TypedAst.TypedExpr) := do
@@ -370,14 +407,23 @@ partial def tcAnno (senv : SEnv) (fenv : FEnv) (resultType : Option Tau) (anno :
 partial def tcMStm (senv : SEnv) (fenv : FEnv) (expectedRet : Tau) (mstm : MarkedStm) (venv : VEnv) :
     Except String (C0VC.TypedAst.Stm × VEnv) := do
   match mstm.node with
-  | .assign varName val =>
-    let varInfo ← tcVarDeclared venv varName
-    let tval ← tcExpr senv fenv none val venv
-    if tauAssignable varInfo.varType tval.tau then
-      let venv' ← markVEnvInitialized venv varName
-      .ok (.assign varName (coerceNullTo varInfo.varType tval), venv')
-    else
-      .error s!"assigning to {varName} an expression of different type"
+  | .assign lhs val =>
+    match lhs.node with
+    | .var varName =>
+        let varInfo ← tcVarDeclared venv varName
+        let tval ← tcExpr senv fenv none val venv
+        if tauAssignable varInfo.varType tval.tau then
+          let venv' ← markVEnvInitialized venv varName
+          .ok (.assign (mkTLValue (.var varName) varInfo.varType) (coerceNullTo varInfo.varType tval), venv')
+        else
+          .error s!"assigning to {varName} an expression of different type"
+    | _ =>
+        let tlhs ← tcLValue senv fenv none lhs venv
+        let tval ← tcExpr senv fenv none val venv
+        if tauAssignable tlhs.tau tval.tau then
+          .ok (.assign tlhs (coerceNullTo tlhs.tau tval), venv)
+        else
+          .error s!"assigning expression of type {ppTau tval.tau} to lvalue of type {ppTau tlhs.tau}"
 
   | .ifLit test thenBranch elseBranch =>
     let ttest ← tcExprHasType senv fenv none test venv .bool "if condition"

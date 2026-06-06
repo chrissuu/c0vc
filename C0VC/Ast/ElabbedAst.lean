@@ -71,6 +71,19 @@ structure MarkedExpr where
 end
 
 mutual
+inductive LValue where
+  | var (name : String)
+  | deref (ptr : MarkedLValue)
+  | dot (struct : MarkedLValue) (field : String)
+  | arrow (structPtr : MarkedLValue) (field : String)
+  | arrAccess (arr : MarkedLValue) (index : MarkedExpr)
+
+structure MarkedLValue where
+  node : LValue
+  span : Option SrcSpan
+end
+
+mutual
 inductive Anno where
   | requires (precondition : MarkedExpr)
   | ensures (postcondition : MarkedExpr)
@@ -84,7 +97,7 @@ end
 
 mutual
 inductive Stm where
-  | assign (varName : String) (val : MarkedExpr)
+  | assign (lhs : MarkedLValue) (val : MarkedExpr)
   | ifLit (test : MarkedExpr) (thenBranch : MarkedStm) (elseBranch : MarkedStm)
   | whileLit (test : MarkedExpr) (body : MarkedStm) (step : MarkedStm)
   | ret (valOpt : Option MarkedExpr)
@@ -188,6 +201,18 @@ partial def ppMarkedExpr (e : MarkedExpr) : String :=
 end
 
 mutual
+partial def ppLValue : LValue → String
+  | .var id => id
+  | .deref ptr => s!"*({ppMarkedLValue ptr})"
+  | .dot struct field => s!"{ppMarkedLValue struct}.{field}"
+  | .arrow structPtr field => s!"{ppMarkedLValue structPtr}->{field}"
+  | .arrAccess arr index => s!"{ppMarkedLValue arr}[{ppMarkedExpr index}]"
+
+partial def ppMarkedLValue (lv : MarkedLValue) : String :=
+  ppLValue lv.node
+end
+
+mutual
 def ppAnno : Anno → String
   | .requires precondition => s!"//@requires ({ppMarkedExpr precondition})"
   | .ensures postcondition => s!"//@ensures ({ppMarkedExpr postcondition})"
@@ -200,8 +225,8 @@ end
 
 mutual
 partial def ppStm : Stm → String
-  | .assign id e =>
-      s!"{id} = {ppMarkedExpr e};"
+  | .assign lhs e =>
+      s!"{ppMarkedLValue lhs} = {ppMarkedExpr e};"
   | .ret valOpt =>
       match valOpt with
       | some e => s!"return {ppMarkedExpr e};"
@@ -329,8 +354,8 @@ def ppAnnoRaw (indentLevel : Nat) : Anno → String
 
 mutual
 partial def ppStmRaw (indentLevel : Nat) : Stm → String
-  | .assign id e =>
-      s!"{spaces indentLevel}Assign({id},\n{ppMarkedExprRaw (indentLevel + 1) e}\n{spaces indentLevel})"
+  | .assign lhs e =>
+      s!"{spaces indentLevel}Assign({ppMarkedLValue lhs},\n{ppMarkedExprRaw (indentLevel + 1) e}\n{spaces indentLevel})"
   | .ret valOpt =>
       match valOpt with
       | some e => s!"{spaces indentLevel}Ret(\n{ppMarkedExprRaw (indentLevel + 1) e}\n{spaces indentLevel})"
