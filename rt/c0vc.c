@@ -4,10 +4,19 @@
 #include <stdio.h>
 #include <stdlib.h>
 
+#define C0VC_ARRAY_HEADER_SIZE ((int)sizeof(int64_t))
+
 void __c0vc_abort(const char *msg) {
   fprintf(stderr, "%s\n", msg);
   fflush(stderr);
   raise(SIGABRT);
+  exit(1);
+}
+
+void __c0vc_memory_error(const char *msg) {
+  fprintf(stderr, "%s\n", msg);
+  fflush(stderr);
+  raise(SIGUSR2);
   exit(1);
 }
 
@@ -67,12 +76,36 @@ void* __c0vc_alloc_array(int count, int elem_size) {
   if (count < 0 || elem_size <= 0) {
     __c0vc_abort("invalid array allocation size");
   }
-  if (elem_size != 0 && count > INT_MAX / elem_size) {
+  if (elem_size != 0 && count > (INT_MAX - C0VC_ARRAY_HEADER_SIZE) / elem_size) {
     __c0vc_abort("array allocation size overflow");
   }
-  void* ptr = calloc((size_t)count, (size_t)elem_size);
-  if (ptr == NULL && count != 0) {
+  size_t bytes = (size_t)C0VC_ARRAY_HEADER_SIZE + ((size_t)count * (size_t)elem_size);
+  char* raw = (char*)calloc(1, bytes);
+  if (raw == NULL) {
     __c0vc_abort("out of memory");
   }
+  *((int64_t*)raw) = (int64_t)count;
+  return raw + C0VC_ARRAY_HEADER_SIZE;
+}
+
+void* __c0vc_check_ptr(void* ptr) {
+  if (ptr == NULL) {
+    __c0vc_memory_error("null pointer dereference");
+  }
   return ptr;
+}
+
+int __c0vc_array_length(void* arr) {
+  if (arr == NULL) {
+    __c0vc_memory_error("null array access");
+  }
+  return (int)(*((int64_t*)((char*)arr - C0VC_ARRAY_HEADER_SIZE)));
+}
+
+void* __c0vc_check_array_access(void* arr, int index) {
+  int length = __c0vc_array_length(arr);
+  if (index < 0 || index >= length) {
+    __c0vc_memory_error("array index out of bounds");
+  }
+  return arr;
 }

@@ -211,6 +211,40 @@ partial def translateExpr
           (cmdsStructPtr, .arrow transStructPtr structName (lookupFieldIndex senv structName field) (translateTau texpr.tau), env', tc', lc')
       | _ => panic! "[Error] arrow expected pointer-to-struct type"
 
+partial def translateLValueExpr
+  (senv : SEnv)
+  (tlv : C0VC.TypedAst.TypedLValue)
+  (env : Std.HashMap String Temp)
+  (tc : TempCounter)
+  (lc : LabelCounter)
+  : List Tree.Command × Tree.Expr × TempEnv × TempCounter × LabelCounter :=
+  match tlv.node with
+  | .var name =>
+    match env.get? name with
+    | some temp => ([], .temp temp, env, tc, lc)
+    | none =>
+      let (temp, tc') := Temp.bumpAndCreate tc
+      ([], .temp temp, env.insert name temp, tc', lc)
+  | .deref ptr =>
+      let (cmdsPtr, transPtr, env', tc', lc') := translateLValueExpr senv ptr env tc lc
+      (cmdsPtr, .deref transPtr (translateTau tlv.tau), env', tc', lc')
+  | .arrAccess arr index =>
+      let (cmdsArr, transArr, env', tc', lc') := translateLValueExpr senv arr env tc lc
+      let (cmdsIndex, transIndex, env'', tc'', lc'') := translateExpr senv index env' tc' lc'
+      (cmdsArr ++ cmdsIndex, .arrAccess transArr transIndex (translateTau tlv.tau), env'', tc'', lc'')
+  | .dot struct field =>
+      let (cmdsStruct, transStruct, env', tc', lc') := translateLValueExpr senv struct env tc lc
+      match struct.tau with
+      | .struct structName =>
+          (cmdsStruct, .dot transStruct structName (lookupFieldIndex senv structName field) (translateTau tlv.tau), env', tc', lc')
+      | _ => panic! "[Error] dot lvalue expected struct type"
+  | .arrow structPtr field =>
+      let (cmdsStructPtr, transStructPtr, env', tc', lc') := translateLValueExpr senv structPtr env tc lc
+      match structPtr.tau with
+      | .ptr (.struct structName) =>
+          (cmdsStructPtr, .arrow transStructPtr structName (lookupFieldIndex senv structName field) (translateTau tlv.tau), env', tc', lc')
+      | _ => panic! "[Error] arrow lvalue expected pointer-to-struct type"
+
 partial def translateStm
   (senv : SEnv)
   (mstm : C0VC.TypedAst.Stm)
@@ -219,14 +253,19 @@ partial def translateStm
   (lc : LabelCounter)
   : List Tree.Command × TempEnv × TempCounter × LabelCounter :=
   match mstm with
-  | .assign varName val =>
+  | .assign lhs val =>
     let (cmds, expr, env', tc', lc') := translateExpr senv val env tc lc
-    match env.get? varName with
-    | some temp =>
-      (cmds ++ [.move temp expr], env', tc', lc')
-    | none =>
-      let (temp, tc') := Temp.bumpAndCreate tc
-      (cmds ++ [.move temp expr], env', tc', lc')
+    match lhs.node with
+    | .var varName =>
+        match env.get? varName with
+        | some temp =>
+          (cmds ++ [.move temp expr], env', tc', lc')
+        | none =>
+          let (temp, tc') := Temp.bumpAndCreate tc
+          (cmds ++ [.move temp expr], env', tc', lc')
+    | _ =>
+        let (cmdsLhs, lhsExpr, env'', tc'', lc'') := translateLValueExpr senv lhs env' tc' lc'
+        (cmds ++ cmdsLhs ++ [.store lhsExpr expr], env'', tc'', lc'')
 
   | .ifLit test thenBranch elseBranch =>
     let emitLabel (cmds : List Command) :=

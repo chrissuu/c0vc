@@ -10,6 +10,9 @@ inductive Fn where
   | assert
   | alloc
   | allocArray
+  | checkPtr
+  | checkArrayAccess
+  | arrayLength
 deriving Inhabited, BEq
 
 def name : Fn → String
@@ -20,6 +23,9 @@ def name : Fn → String
   | .assert => "_c0_assert"
   | .alloc => "__c0vc_alloc"
   | .allocArray => "__c0vc_alloc_array"
+  | .checkPtr => "__c0vc_check_ptr"
+  | .checkArrayAccess => "__c0vc_check_array_access"
+  | .arrayLength => "__c0vc_array_length"
 
 def retTau : Fn → IR.Tau
   | .checkedDiv
@@ -29,6 +35,9 @@ def retTau : Fn → IR.Tau
   | .assert => .void
   | .alloc
   | .allocArray => .ptr
+  | .checkPtr
+  | .checkArrayAccess => .ptr
+  | .arrayLength => .i32
 
 def argsTau : Fn → List IR.Tau
   | .checkedDiv
@@ -38,8 +47,21 @@ def argsTau : Fn → List IR.Tau
   | .assert => [.i1]
   | .alloc => [.i32]
   | .allocArray => [.i32, .i32]
+  | .checkPtr => [.ptr]
+  | .checkArrayAccess => [.ptr, .i32]
+  | .arrayLength => [.ptr]
 
 def all : List Fn :=
-  [.checkedDiv, .checkedMod, .checkedShl, .checkedShr, .assert, .alloc, .allocArray]
+  [ .checkedDiv
+  , .checkedMod
+  , .checkedShl
+  , .checkedShr
+  , .assert
+  , .alloc
+  , .allocArray
+  , .checkPtr
+  , .checkArrayAccess
+  , .arrayLength
+  ]
 
 end C0VC.LLVM.Runtime
