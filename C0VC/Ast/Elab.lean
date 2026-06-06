@@ -479,7 +479,7 @@ def collectCallsGDecl : GDecl → Std.HashSet String
       let calls := body.foldl (fun calls stm => (collectCallsMStm stm).fold (fun acc fname => acc.insert fname) calls) {}
       annotations.foldl (fun calls anno => (collectCallsMStm anno).fold (fun acc fname => acc.insert fname) calls) calls
   | .typedef .. => {}
-  | .sdecl .. => {}
+  | .sdecl .. | .sdefn .. => {}
 
 def checkReferencedFnsDefined (fenv : FnEnv) (referenced : Std.HashSet String) : Except String Unit :=
   referenced.fold
@@ -600,11 +600,13 @@ def elabGDecl (gdecl : GDecl) (env : Env) : Except String (GDecl × Env) := do
       .error "typedef cannot alias void"
     else
       .ok (.typedef t alias, env.insert alias t)
-  | .sdecl name fields =>
+  | .sdecl name =>
+    .ok (.sdecl name, env)
+  | .sdefn name fields =>
     let _ ← checkFieldNamesUnique fields
     let _ ← checkFieldTypesNotVoid fields
     let fields' ← elabFields fields env
-    .ok (.sdecl name fields', env)
+    .ok (.sdefn name fields', env)
 
 def checkCallsDeclared (fenv : FnEnv) (calledFns : Std.HashSet String) : Except String Unit :=
   calledFns.fold
@@ -625,7 +627,7 @@ private def registerHeaderGDecl (fenv : FnEnv) : GDecl → Except String FnEnv
   | .fdefn .. =>
       .error "Function definitions are not allowed in header files"
   | .typedef .. => .ok fenv
-  | .sdecl .. => .ok fenv
+  | .sdecl .. | .sdefn .. => .ok fenv
 
 private def registerSourceGDecl (fenv : FnEnv) : GDecl → Except String FnEnv
   | .fdecl retType fname params _ =>
@@ -633,18 +635,18 @@ private def registerSourceGDecl (fenv : FnEnv) : GDecl → Except String FnEnv
   | .fdefn retType fname params _ _ =>
       registerFn fenv fname retType params true false
   | .typedef .. => .ok fenv
-  | .sdecl .. => .ok fenv
+  | .sdecl .. | .sdefn .. => .ok fenv
 
 private def keepHeaderGDecl : GDecl → Bool
   | .fdecl .. => true
   | .fdefn .. => true
-  | .sdecl .. => true
+  | .sdecl .. | .sdefn .. => true
   | .typedef .. => false
 
 private def keepSourceGDecl : GDecl → Bool
   | .fdefn .. => true
   | .fdecl .. => true
-  | .sdecl .. => true
+  | .sdecl .. | .sdefn .. => true
   | _ => false
 
 private def seedMainFn (fenv : FnEnv) : Except String FnEnv :=

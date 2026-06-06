@@ -13,6 +13,9 @@ open C0VC.Utils.Temp
 abbrev TempEnv := Std.HashMap String Temp
 abbrev SEnv := Std.HashMap String (List C0VC.TypedAst.Field)
 
+instance : Inhabited C0VC.TypedAst.TypedExpr where
+  default := { node := .intLit 0, tau := .int }
+
 -- TODO: consider wrapping env meta things into here / change to StateM
 structure Env where
   tempEnv : TempEnv
@@ -193,23 +196,41 @@ partial def translateExpr
       (cmdsSize, .allocArray (translateTau tau) transSize, env', tc', lc')
   | .deref ptr =>
       let (cmdsPtr, transPtr, env', tc', lc') := translateExpr senv ptr env tc lc
-      (cmdsPtr, .deref transPtr (translateTau texpr.tau), env', tc', lc')
+      let (temp, tc'') := Temp.bumpAndCreate tc'
+      let expr := .deref transPtr (translateTau texpr.tau)
+      (cmdsPtr ++ [.move temp expr], .temp temp, env', tc'', lc')
   | .arrAccess arr index =>
       let (cmdsArr, transArr, env', tc', lc') := translateExpr senv arr env tc lc
       let (cmdsIndex, transIndex, env'', tc'', lc'') := translateExpr senv index env' tc' lc'
-      (cmdsArr ++ cmdsIndex, .arrAccess transArr transIndex (translateTau texpr.tau), env'', tc'', lc'')
+      let (temp, tc''') := Temp.bumpAndCreate tc''
+      let expr := .arrAccess transArr transIndex (translateTau texpr.tau)
+      (cmdsArr ++ cmdsIndex ++ [.move temp expr], .temp temp, env'', tc''', lc'')
   | .dot struct field =>
       let (cmdsStruct, transStruct, env', tc', lc') := translateExpr senv struct env tc lc
       match struct.tau with
       | .struct structName =>
-          (cmdsStruct, .dot transStruct structName (lookupFieldIndex senv structName field) (translateTau texpr.tau), env', tc', lc')
+          let (temp, tc'') := Temp.bumpAndCreate tc'
+          let expr := .dot transStruct structName (lookupFieldIndex senv structName field) (translateTau texpr.tau)
+          (cmdsStruct ++ [.move temp expr], .temp temp, env', tc'', lc')
       | _ => panic! "[Error] dot expected struct type"
   | .arrow structPtr field =>
       let (cmdsStructPtr, transStructPtr, env', tc', lc') := translateExpr senv structPtr env tc lc
       match structPtr.tau with
       | .ptr (.struct structName) =>
-          (cmdsStructPtr, .arrow transStructPtr structName (lookupFieldIndex senv structName field) (translateTau texpr.tau), env', tc', lc')
+          let (temp, tc'') := Temp.bumpAndCreate tc'
+          let expr := .arrow transStructPtr structName (lookupFieldIndex senv structName field) (translateTau texpr.tau)
+          (cmdsStructPtr ++ [.move temp expr], .temp temp, env', tc'', lc')
       | _ => panic! "[Error] arrow expected pointer-to-struct type"
+
+partial def typedLValueToExpr (tlv : C0VC.TypedAst.TypedLValue) : C0VC.TypedAst.TypedExpr :=
+  let node :=
+    match tlv.node with
+    | .var name => .var name
+    | .deref ptr => .deref (typedLValueToExpr ptr)
+    | .dot struct field => .dot (typedLValueToExpr struct) field
+    | .arrow structPtr field => .arrow (typedLValueToExpr structPtr) field
+    | .arrAccess arr index => .arrAccess (typedLValueToExpr arr) index
+  { node := node, tau := tlv.tau }
 
 partial def translateLValueExpr
   (senv : SEnv)
@@ -225,11 +246,13 @@ partial def translateLValueExpr
     | none =>
       let (temp, tc') := Temp.bumpAndCreate tc
       ([], .temp temp, env.insert name temp, tc', lc)
+
+  -- lvalues and its side effects are computed first before doing rhs.
   | .deref ptr =>
-      let (cmdsPtr, transPtr, env', tc', lc') := translateLValueExpr senv ptr env tc lc
+      let (cmdsPtr, transPtr, env', tc', lc') := translateExpr senv (typedLValueToExpr ptr) env tc lc
       (cmdsPtr, .deref transPtr (translateTau tlv.tau), env', tc', lc')
   | .arrAccess arr index =>
-      let (cmdsArr, transArr, env', tc', lc') := translateLValueExpr senv arr env tc lc
+      let (cmdsArr, transArr, env', tc', lc') := translateExpr senv (typedLValueToExpr arr) env tc lc
       let (cmdsIndex, transIndex, env'', tc'', lc'') := translateExpr senv index env' tc' lc'
       (cmdsArr ++ cmdsIndex, .arrAccess transArr transIndex (translateTau tlv.tau), env'', tc'', lc'')
   | .dot struct field =>
@@ -264,6 +287,9 @@ partial def translateStm
           let (temp, tc') := Temp.bumpAndCreate tc
           (cmds ++ [.move temp expr], env', tc', lc')
     | _ =>
+        -- Non var assignments must evaluate the lvalue location before
+        -- the rhs. This is esp. the case when the lvalue has calls/checks, e.g.
+        -- A[f()] = A[g()] + 1 or p->x = h().
         let (cmdsLhs, lhsExpr, env', tc', lc') := translateLValueExpr senv lhs env tc lc
         let (cmdsRhs, expr, env'', tc'', lc'') := translateExpr senv val env' tc' lc'
         (cmdsLhs ++ cmdsRhs ++ [.store lhsExpr expr], env'', tc'', lc'')

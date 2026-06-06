@@ -158,7 +158,8 @@ inductive GDecl where
   | fdecl (retType : Tau) (fname : String) (params : List Param) (annotations : List MarkedStm)
   | fdefn (retType : Tau) (fname : String) (params : List Param) (body : List MarkedStm) (annotations : List MarkedStm)
   | typedef (type : Tau) (alias : String)
-  | sdecl (name : String) (fields : List Field)
+  | sdecl (name : String)
+  | sdefn (name : String) (fields : List Field)
 deriving Inhabited
 
 abbrev Program := List GDecl
@@ -356,7 +357,9 @@ def ppAnnos (annos : List MarkedStm) : String :=
 def ppGDecl : GDecl → String
   | .typedef tau id =>
       s!"typedef {ppTau tau} {id};"
-  | .sdecl name fields =>
+  | .sdecl name =>
+      s!"struct {name};"
+  | .sdefn name fields =>
       s!"struct {name} \{\n{ppFields fields}\n};"
   | .fdecl ret id params annotations =>
       s!"{ppAnnos annotations}\{\n}{ppTau ret} {id}{ppParams params};"
@@ -415,8 +418,10 @@ def ppStmsRaw (stms : List MarkedStm) : String :=
 def ppGDeclRaw : GDecl → String
   | .typedef tau id =>
       s!"Typedef({ppTau tau}, {id})"
-  | .sdecl name fields =>
-      s!"StructDecl({name}, [{String.intercalate ", " (fields.map ppParam)}])"
+  | .sdecl name =>
+      s!"StructDecl({name})"
+  | .sdefn name fields =>
+      s!"StructDefn({name}, [{String.intercalate ", " (fields.map ppParam)}])"
   | .fdecl ret id params annotations =>
       s!"Fdecl({ppTau ret}, {id}, [{String.intercalate ", " (params.map ppParam)}], [{String.intercalate ", " (annotations.map ppMarkedStm)}])"
   | .fdefn ret id params stms annotations =>

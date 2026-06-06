@@ -223,9 +223,11 @@ def convertGDecl : C0VC.Ast.GDecl → Except String C0VC.ElabbedAst.GDecl
   | .typedef .. =>
       .error "typedef found after elaboration"
 
-  | .sdecl name fields => do
+  | .sdecl name =>
+      .ok (.sdecl name)
+  | .sdefn name fields => do
       let fields' ← fields.mapM convertField
-      .ok (.sdecl name fields')
+      .ok (.sdefn name fields')
 
 
 

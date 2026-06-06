@@ -118,6 +118,18 @@ def parseTypeIdent : P String :=
     | .typeIdent name => some name
     | _ => none)
 
+def parseStructName : P String :=
+  satisfyKind (fun
+    | .ident name => some name
+    | .typeIdent name => some name
+    | _ => none)
+
+def parseFieldName : P String :=
+  satisfyKind (fun
+    | .ident name => some name
+    | .typeIdent name => some name
+    | _ => none)
+
 def hexCharToNat (c : Char) : Nat :=
   if '0' <= c && c <= '9' then c.toNat - '0'.toNat
   else if 'a' <= c && c <= 'f' then c.toNat - 'a'.toNat + 10
@@ -195,7 +207,7 @@ partial def parseTauBase : P Tau :=
   <|>
   (do
     let _ ← expectKindTokMsg (only .kwStruct) "expected 'struct'"
-    let name ← parseIdent
+    let name ← parseStructName
     pure (.struct name))
   <|>
   (do
@@ -278,12 +290,12 @@ partial def parsePostfixOp : P (MarkedExpr → MarkedExpr) :=
   <|>
   (do
     let _ ← expectKindTokMsg (only .dot) "expected '.'"
-    let field ← parseIdent
+    let field ← parseFieldName
     pure (fun base => mkExpr (.dot base field)))
   <|>
   (do
     let _ ← expectKindTokMsg (only .arrow) "expected '->'"
-    let field ← parseIdent
+    let field ← parseFieldName
     pure (fun base => mkExpr (.arrow base field)))
   <|>
   (do
@@ -490,12 +502,12 @@ partial def parseLValueBase : P ParsedLValue :=
 partial def parseLValuePostfixOp : P (MarkedLValue → MarkedLValue) :=
   (do
     let _ ← expectKindTokMsg (only .dot) "expected '.'"
-    let field ← parseIdent
+    let field ← parseFieldName
     pure (fun base => { node := .dot base field, span := none }))
   <|>
   (do
     let _ ← expectKindTokMsg (only .arrow) "expected '->'"
-    let field ← parseIdent
+    let field ← parseFieldName
     pure (fun base => { node := .arrow base field, span := none }))
   <|>
   (do
@@ -750,23 +762,23 @@ def parseTypedef : P GDecl := do
 
 def parseField : P Field := do
   let tau ← parseTau
-  let fieldName ← parseIdent
+  let fieldName ← parseFieldName
   let _ ← expectKindTokMsg (only .semicolon) "expected ';' after struct field"
   pure (tau, fieldName)
 
 def parseStructDecl : P GDecl := do
   let _ ← expectKindTokMsg (only .kwStruct) "expected 'struct'"
-  let name ← parseIdent
+  let name ← parseStructName
   (do
     let _ ← expectKindTokMsg (only .lBrace) "expected '{' in struct definition"
     let fieldsRev ← Parser.foldl (fun acc field => field :: acc) [] parseField
     let _ ← expectKindTokMsg (only .rBrace) "expected '}' after struct fields"
     let _ ← expectKindTokMsg (only .semicolon) "expected ';' after struct definition"
-    pure (.sdecl name fieldsRev.reverse))
+    pure (.sdefn name fieldsRev.reverse))
   <|>
   (do
     let _ ← expectKindTokMsg (only .semicolon) "expected ';' after struct declaration"
-    pure (.sdecl name []))
+    pure (.sdecl name))
 
 def parseParam : P Param := do
   let tau ← parseTau

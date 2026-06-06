@@ -20,8 +20,17 @@ def tauEq : Tau → Tau → Bool
   | _, _ => false
 
 def tauIsRef : Tau → Bool
-  | .ptr _ | .array _ => true
+  | .ptr _ => true
   | _ => false
+
+def tauIsSmall : Tau → Bool
+  | .int | .char | .bool => true
+  | .ptr _ | .array _ | .null => true
+  | .void | .string | .struct _ => false
+
+def tauIsReturnable : Tau → Bool
+  | .void => true
+  | tau => tauIsSmall tau
 
 def tauAssignable (expected actual : Tau) : Bool :=
   tauEq expected actual || (tauIsRef expected && tauEq actual .null)
@@ -34,6 +43,10 @@ def coerceNullTo (expected : Tau) (expr : C0VC.TypedAst.TypedExpr) : C0VC.TypedA
 
 def tauComparable (lhs rhs : Tau) : Bool :=
   if tauEq lhs .void || tauEq rhs .void then
+    false
+  else if not (tauIsSmall lhs) || not (tauIsSmall rhs) then
+    false
+  else if (match lhs with | .array _ => true | _ => false) || (match rhs with | .array _ => true | _ => false) then
     false
   else
     tauEq lhs rhs || (tauEq lhs .null && tauIsRef rhs) || (tauEq rhs .null && tauIsRef lhs)
@@ -54,14 +67,16 @@ def collectFEnv (program : Program) : FEnv :=
           env.insert fname { retType, fname, params }
       | .fdefn fdefn =>
           env.insert fdefn.fname { retType := fdefn.retType, fname := fdefn.fname, params := fdefn.params }
-      | .sdecl .. => env)
+      | .sdecl .. | .sdefn .. => env)
     {}
 
 def collectSEnv (program : Program) : Except String SEnv :=
   program.foldlM
     (fun env gdecl => do
       match gdecl with
-      | .sdecl name fields =>
+      | .sdecl _ =>
+          .ok env
+      | .sdefn name fields =>
           if env.contains name then
             .error s!"struct {name} declared more than once"
           else
@@ -71,8 +86,29 @@ def collectSEnv (program : Program) : Except String SEnv :=
 
 def collectStructs (program : Program) : List (String × List Field) :=
   program.filterMap (fun
-    | .sdecl name fields => some (name, fields)
+    | .sdefn name fields => some (name, fields)
     | _ => none)
+
+def valueStructDeps : Tau → List String
+  | .struct name => [name]
+  | .ptr _ => []
+  | .array _ => []
+  | _ => []
+
+partial def checkStructAcyclicFrom (senv : SEnv) (stack : List String) (name : String) :
+    Except String Unit := do
+  if stack.contains name then
+    .error s!"cyclic struct definition involving struct {name}"
+  else
+    match senv.get? name with
+    | none => .error s!"struct {name} used before declaration"
+    | some fields =>
+        let stack' := name :: stack
+        fields.forM (fun (tau, _) =>
+          (valueStructDeps tau).forM (fun dep => checkStructAcyclicFrom senv stack' dep))
+
+def checkStructsAcyclic (senv : SEnv) : Except String Unit := do
+  senv.toList.forM (fun (name, _) => checkStructAcyclicFrom senv [] name)
 
 def collectFnDefNames (program : Program) : List String :=
   program.filterMap (fun
@@ -170,6 +206,40 @@ def ppTau : Tau → String
   | .array tau => s!"{ppTau tau}[]"
   | .null => "null"
 
+partial def tauContainsVoidOrString : Tau → Bool
+  | .void | .string => true
+  | .ptr tau | .array tau => tauContainsVoidOrString tau
+  | _ => false
+
+def tcValueTypeValid (tau : Tau) (ctx : String) : Except String Unit :=
+  if tauContainsVoidOrString tau then
+    .error s!"{ctx} cannot contain void or string"
+  else if tauEq tau .null then
+    .error s!"{ctx} cannot have null type"
+  else
+    .ok ()
+
+def tcReturnTypeValid (tau : Tau) : Except String Unit :=
+  match tau with
+  | .void => .ok ()
+  | _ => tcValueTypeValid tau "function return type"
+
+def tauNeedsStructSize : Tau → Option String
+  | .struct name => some name
+  | _ => none
+
+def tcStructSizeKnown (senv : SEnv) (tau : Tau) (ctx : String) : Except String Unit :=
+  match tauNeedsStructSize tau with
+  | some name =>
+      if senv.contains name then
+        .ok ()
+      else
+        .error s!"{ctx} needs definition of struct {name}"
+  | none => .ok ()
+
+def tcStructFieldTypeKnown (senv : SEnv) (tau : Tau) : Except String Unit :=
+  tcStructSizeKnown senv tau "struct field"
+
 def binopType : BinOp → Tau
   | .plus
   | .sub
@@ -224,13 +294,31 @@ def lookupField (senv : SEnv) (structName fieldName : String) : Except String Ta
   | some (tau, _) => .ok tau
   | none => .error s!"struct {structName} has no field {fieldName}"
 
-def tcAllocType (tau : Tau) : Except String Unit := do
-  if tauEq tau .void then
-    .error "cannot allocate a value of type void"
-  else if tauEq tau .null then
-    .error "cannot allocate a value of type null"
-  else
+def tcAllocType (senv : SEnv) (tau : Tau) (ctx : String) : Except String Unit := do
+  let _ ← tcValueTypeValid tau ctx
+  tcStructSizeKnown senv tau ctx
+
+def tcSmallType (tau : Tau) (ctx : String) : Except String Unit :=
+  if tauIsSmall tau then
     .ok ()
+  else
+    .error s!"{ctx} must have small type"
+
+def tcReturnType (tau : Tau) : Except String Unit :=
+  if tauIsReturnable tau then
+    .ok ()
+  else
+    .error "function return type must be small"
+
+def tcParamTypesSmall (params : List Param) : Except String Unit :=
+  params.forM (fun (tau, _) => do
+    let _ ← tcValueTypeValid tau "function parameter"
+    tcSmallType tau "function parameter")
+
+def tcFunctionSignature (retType : Tau) (params : List Param) : Except String Unit := do
+  let _ ← tcReturnTypeValid retType
+  let _ ← tcReturnType retType
+  tcParamTypesSmall params
 
 mutual
 partial def tcExpr (senv : SEnv) (fenv : FEnv) (resultType : Option Tau) (mexpr : MarkedExpr) (venv : VEnv) :
@@ -266,6 +354,7 @@ partial def tcExpr (senv : SEnv) (fenv : FEnv) (resultType : Option Tau) (mexpr 
     let tthen ← tcExpr senv fenv resultType thenVal venv
     let telse ← tcExpr senv fenv resultType elseVal venv
     if tauEq tthen.tau telse.tau then
+      let _ ← tcSmallType tthen.tau "ternary expression"
       .ok (mkTExpr (.ternary ttest tthen telse) tthen.tau)
     else if tauEq tthen.tau .null && tauIsRef telse.tau then
       .ok (mkTExpr (.ternary ttest (coerceNullTo telse.tau tthen) telse) telse.tau)
@@ -308,10 +397,10 @@ partial def tcExpr (senv : SEnv) (fenv : FEnv) (resultType : Option Tau) (mexpr 
       .ok (mkTExpr (.arrow tstructPtr field) fieldTau)
     | _ => .error "left side of arrow access must have pointer-to-struct type"
   | .alloc type =>
-    let _ ← tcAllocType type
+    let _ ← tcAllocType senv type "alloc type"
     .ok (mkTExpr (.alloc type) (.ptr type))
   | .allocArray type size =>
-    let _ ← tcAllocType type
+    let _ ← tcAllocType senv type "alloc_array element type"
     let tsize ← tcExpr senv fenv resultType size venv
     if tauEq tsize.tau .int then
       .ok (mkTExpr (.allocArray type tsize) (.array type))
@@ -404,6 +493,13 @@ partial def tcAnno (senv : SEnv) (fenv : FEnv) (resultType : Option Tau) (anno :
     let te ← tcExpr senv fenv resultType e venv
     .ok (.loopInvariant te)
 
+
+-- TODO: this is kinda ugly
+partial def isCompilerTempDeclChain : MarkedStm → Bool
+  | { node := .declare varName _ _ body, .. } =>
+      varName.startsWith "$c0vc_" && isCompilerTempDeclChain body
+  | _ => true
+
 partial def tcMStm (senv : SEnv) (fenv : FEnv) (expectedRet : Tau) (mstm : MarkedStm) (venv : VEnv) :
     Except String (C0VC.TypedAst.Stm × VEnv) := do
   match mstm.node with
@@ -411,7 +507,9 @@ partial def tcMStm (senv : SEnv) (fenv : FEnv) (expectedRet : Tau) (mstm : Marke
     match lhs.node with
     | .var varName =>
         let varInfo ← tcVarDeclared venv varName
+        let _ ← tcSmallType varInfo.varType "assignment target"
         let tval ← tcExpr senv fenv none val venv
+        let _ ← tcSmallType tval.tau "assigned expression"
         if tauAssignable varInfo.varType tval.tau then
           let venv' ← markVEnvInitialized venv varName
           .ok (.assign (mkTLValue (.var varName) varInfo.varType) (coerceNullTo varInfo.varType tval), venv')
@@ -419,7 +517,9 @@ partial def tcMStm (senv : SEnv) (fenv : FEnv) (expectedRet : Tau) (mstm : Marke
           .error s!"assigning to {varName} an expression of different type"
     | _ =>
         let tlhs ← tcLValue senv fenv none lhs venv
+        let _ ← tcSmallType tlhs.tau "assignment target"
         let tval ← tcExpr senv fenv none val venv
+        let _ ← tcSmallType tval.tau "assigned expression"
         if tauAssignable tlhs.tau tval.tau then
           .ok (.assign tlhs (coerceNullTo tlhs.tau tval), venv)
         else
@@ -433,7 +533,18 @@ partial def tcMStm (senv : SEnv) (fenv : FEnv) (expectedRet : Tau) (mstm : Marke
 
   | .whileLit test body step =>
     match step.node with
-    | .declare .. => .error "found a declaration in the step of a for loop"
+    | .declare .. =>
+      if !isCompilerTempDeclChain step then
+        .error "found a declaration in the step of a for loop"
+      else
+        let ttest ← tcExprHasType senv fenv none test venv .bool "while condition"
+        let (tbody, bodyEnv) ← tcMStm senv fenv expectedRet body venv
+        let (tstep, _) ← tcMStm senv fenv expectedRet step bodyEnv
+        let tbodyWithStep :=
+          match tstep with
+          | .nop => tbody
+          | _ => .seq tbody tstep
+        .ok (.whileLit ttest tbodyWithStep, venv)
     | _ =>
       let ttest ← tcExprHasType senv fenv none test venv .bool "while condition"
       let (tbody, bodyEnv) ← tcMStm senv fenv expectedRet body venv
@@ -447,12 +558,15 @@ partial def tcMStm (senv : SEnv) (fenv : FEnv) (expectedRet : Tau) (mstm : Marke
   | .declare varName varType init body =>
     if venv.contains varName then
       .error s!"variable {varName} declared more than once"
+    let _ ← tcValueTypeValid varType "local variable"
     if tauEq varType .void then
       .error s!"cannot have a value of type void"
+    let _ ← tcSmallType varType "local variable"
     let (tinit, venvForBody) ←
       match init with
       | some initVal =>
         let tinit ← tcExpr senv fenv none initVal venv
+        let _ ← tcSmallType tinit.tau "initializer"
         if not (tauAssignable varType tinit.tau) then
           .error s!"assigning to {varName} an expression of different type"
         .ok (some (coerceNullTo varType tinit), insertVEnv venv varName varType true)
@@ -467,6 +581,8 @@ partial def tcMStm (senv : SEnv) (fenv : FEnv) (expectedRet : Tau) (mstm : Marke
       let tval ← tcExpr senv fenv none val venv
       if tauEq tval.tau .void then
         .error "cannot return a void type as a value of a return statement"
+      else if not (tauIsSmall tval.tau) then
+        .error "return value must have small type"
       else if tauAssignable expectedRet tval.tau then
         .ok (.ret (some (coerceNullTo expectedRet tval)), initializeAllVEnv venv)
       else
@@ -484,6 +600,8 @@ partial def tcMStm (senv : SEnv) (fenv : FEnv) (expectedRet : Tau) (mstm : Marke
 
   | .expr e =>
     let te ← tcExpr senv fenv none e venv
+    if not (tauEq te.tau .void) then
+      let _ ← tcSmallType te.tau "expression statement"
     match e.node with
     | .ternary .. =>
       if tauEq te.tau .void then .error "ternary exp as stm cannot have void types"
@@ -546,6 +664,7 @@ def tcReturnedValuesHaveType (expectedRet : Tau) (tbody : List C0VC.TypedAst.Stm
     .error "return type does not match function return type"
 
 def tcFunctionDef (structs : List (String × List Field)) (senv : SEnv) (fenv : FEnv) (fdefn : FunctionDef) : Except String C0VC.TypedAst.FunctionDef := do
+  let _ ← tcFunctionSignature fdefn.retType fdefn.params
   let venv ← fdefn.params.foldlM
     (fun env (varType, name) =>
       if env.contains name then
@@ -569,7 +688,8 @@ def tcFunctionDef (structs : List (String × List Field)) (senv : SEnv) (fenv : 
     .error "Could not find a return statement in function definition"
 
 def tcGDecl (structs : List (String × List Field)) (senv : SEnv) (fenv : FEnv) : GDecl → Except String (Option C0VC.TypedAst.FunctionDef)
-  | .fdecl retType fname params external =>
+  | .fdecl retType fname params external => do
+      let _ ← tcFunctionSignature retType params
       if external then
         .ok (some { retType, fname, params, body := [], annotations := [], structs := structs, external := true })
       else
@@ -577,15 +697,40 @@ def tcGDecl (structs : List (String × List Field)) (senv : SEnv) (fenv : FEnv) 
   | .fdefn fdefn => do
       let tfdefn ← tcFunctionDef structs senv fenv fdefn
       .ok (some tfdefn)
-  | .sdecl .. =>
+  | .sdecl .. | .sdefn .. =>
       .ok none
+
+def tcStructDeclFields (visibleSenv : SEnv) (name : String) (fields : List Field) : Except String Unit :=
+  fields.forM (fun (tau, fieldName) => do
+    let _ ← tcValueTypeValid tau s!"field {fieldName} of struct {name}"
+    tcStructFieldTypeKnown visibleSenv tau)
+
+def tcProgramOrdered
+    (structs : List (String × List Field))
+    (fenv : FEnv)
+    (program : Program) : Except String C0VC.TypedAst.Program := do
+  let (typedRev, _) ← program.foldlM
+    (fun (typedAcc, visibleSenv) gdecl => do
+      match gdecl with
+      | .sdecl _ =>
+          .ok (typedAcc, visibleSenv)
+      | .sdefn name fields =>
+          let _ ← tcStructDeclFields visibleSenv name fields
+          .ok (typedAcc, visibleSenv.insert name fields)
+      | .fdecl .. | .fdefn .. =>
+          let typed? ← tcGDecl structs visibleSenv fenv gdecl
+          match typed? with
+          | some typed => .ok (typed :: typedAcc, visibleSenv)
+          | none => .ok (typedAcc, visibleSenv))
+    ([], {})
+  .ok typedRev.reverse
 
 def tc (program : Program) : Except String C0VC.TypedAst.Program := do
   let _ ← tcMainFn program
   let senv ← collectSEnv program
+  let _ ← checkStructsAcyclic senv
   let structs := collectStructs program
   let fenv := collectFEnv program
-  let typed ← program.mapM (tcGDecl structs senv fenv)
-  .ok (typed.filterMap id)
+  tcProgramOrdered structs fenv program
 
 end C0VC.Typechecker

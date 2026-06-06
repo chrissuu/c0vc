@@ -73,7 +73,10 @@ void* __c0vc_alloc(int size) {
 }
 
 void* __c0vc_alloc_array(int count, int elem_size) {
-  if (count < 0 || elem_size <= 0) {
+  if (count < 0) {
+    __c0vc_memory_error("negative array allocation size");
+  }
+  if (elem_size <= 0) {
     __c0vc_abort("invalid array allocation size");
   }
   if (elem_size != 0 && count > (INT_MAX - C0VC_ARRAY_HEADER_SIZE) / elem_size) {

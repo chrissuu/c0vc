@@ -367,7 +367,7 @@ def finishTypedefTokens (typedefs : Std.HashSet String) (tokensRev : List Token)
       | _ => (tokens', typedefs)
   | none => (tokens', typedefs)
 
-partial def classifyTypedefs (tokens : List Token) : List Token :=
+partial def classifyTypedefsWith (initialTypedefs : List String) (tokens : List Token) : List Token :=
   let rec go (typedefs : Std.HashSet String) (acc : List Token) (rest : List Token) : List Token :=
     match rest with
     | [] => acc.reverse
@@ -386,7 +386,10 @@ partial def classifyTypedefs (tokens : List Token) : List Token :=
             go typedefs' (typedefTokens.reverse ++ acc) rest'
         | _ =>
             go typedefs (classifyTypedefToken typedefs tok :: acc) toks
-  go {} [] tokens
+  go (Std.HashSet.ofList initialTypedefs) [] tokens
+
+partial def classifyTypedefs (tokens : List Token) : List Token :=
+  classifyTypedefsWith [] tokens
 
 partial def munchRaw (fileName : String) (body : String) : Except String (List Token) :=
   let rec go (s : String.Slice) (line col : Nat) (acc : List Token) : Except String (List Token) :=
@@ -399,6 +402,8 @@ partial def munchRaw (fileName : String) (body : String) : Except String (List T
       if !ws.isEmpty then
         let nextLoc := advanceLocBySlice line col ws
         go (s.drop ws.toString.length) nextLoc.line nextLoc.col acc
+      else if s.startsWith "/*" && !s.startsWith "/*@" && (matchComment s s.positions.length).isNone then
+        .error s!"lexical error at {fileName}:{line}:{col}: unterminated block comment"
       else
         let (_, maximalMatch?) := getMatchesAndMaximalMatch s
         match maximalMatch? with
@@ -428,5 +433,10 @@ partial def munchRaw (fileName : String) (body : String) : Except String (List T
 def munch (fileName : String) (body : String) : Except String (List Token) := do
   let tokens ← munchRaw fileName body
   .ok (classifyTypedefs tokens)
+
+def munchWithTypedefs (initialTypedefs : List String) (fileName : String) (body : String) :
+    Except String (List Token) := do
+  let tokens ← munchRaw fileName body
+  .ok (classifyTypedefsWith initialTypedefs tokens)
 
 end C0VC.Lexer

@@ -95,6 +95,25 @@ def tauOfBinOp : Tree.BinOp → IR.Tau
 def runtimeFunctionInfo (fn : Runtime.Fn) : FunctionInfo :=
   { retTau := Runtime.retTau fn, argsTau := Runtime.argsTau fn, external := true }
 
+def alignTo (offset align : Int) : Int :=
+  if align <= 1 then
+    offset
+  else
+    let rem := offset % align
+    if rem == 0 then offset else offset + (align - rem)
+
+mutual
+partial def treeTauAlign (senv : SEnv) : Tree.Tau → Int
+  | .int => 4
+  | .bool => 1
+  | .void => 1
+  | .ptr _ | .array _ | .null => 8
+  | .struct name =>
+      match senv.get? name with
+      | some fields =>
+          fields.foldl (fun acc tau => max acc (treeTauAlign senv tau)) 1
+      | none => 8
+
 partial def treeTauSize (senv : SEnv) : Tree.Tau → Int
   | .int => 4
   | .bool => 1
@@ -102,8 +121,17 @@ partial def treeTauSize (senv : SEnv) : Tree.Tau → Int
   | .ptr _ | .array _ | .null => 8
   | .struct name =>
       match senv.get? name with
-      | some fields => fields.foldl (fun acc tau => acc + treeTauSize senv tau) 0
+      | some fields =>
+          let (size, structAlign) :=
+            fields.foldl
+              (fun (offset, maxAlign) tau =>
+                let fieldAlign := treeTauAlign senv tau
+                let offset' := alignTo offset fieldAlign
+                (offset' + treeTauSize senv tau, max maxAlign fieldAlign))
+              (0, 1)
+          alignTo size structAlign
       | none => 8
+end
 
 def calleeOfName (fenv : FEnv) (fname : String) : IR.Callee :=
   match fenv.get? fname with

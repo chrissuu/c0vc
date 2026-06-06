@@ -71,6 +71,11 @@ private def parseProgramFiles : List String → IO (Except String C0VC.Ast.Progr
           | .error err => pure (.error err)
           | .ok programs => pure (.ok (program ++ programs))
 
+private def typedefAliases (program : C0VC.Ast.Program) : List String :=
+  program.filterMap (fun
+    | .typedef _ name => some name
+    | _ => none)
+
 private def parseArgs : List String → CliConfig → Except String CliConfig
   | [], cfg => .ok cfg
   | "-t" :: rest, cfg => parseArgs rest { cfg with typecheckOnly := true }
@@ -122,7 +127,7 @@ private def runFrontend (cfg : CliConfig) (infile : String) :
   | .error err => pure (.error err)
   | .ok headers =>
       let source ← IO.FS.readFile infile
-      match C0VC.Lexer.munch infile source with
+      match C0VC.Lexer.munchWithTypedefs (typedefAliases headers) infile source with
       | .error err => pure (.error err)
       | .ok tokens =>
           if cfg.dumpTokens then

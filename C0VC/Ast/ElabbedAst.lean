@@ -127,7 +127,8 @@ structure FunctionDef where
 inductive GDecl where
   | fdecl (retType : Tau) (fname : String) (params : List Param) (external : Bool)
   | fdefn (fdefn : FunctionDef)
-  | sdecl (name : String) (fields : List Field)
+  | sdecl (name : String)
+  | sdefn (name : String) (fields : List Field)
 
 abbrev Program := List GDecl
 
@@ -299,7 +300,9 @@ def ppGDecl : GDecl → String
   | .fdecl retType fname params false =>
       s!"{ppTau retType} {fname}{ppParams params};"
   | .fdefn fdefn => ppFunctionDef fdefn
-  | .sdecl name fields =>
+  | .sdecl name =>
+      s!"struct {name};"
+  | .sdefn name fields =>
       s!"struct {name} \{\n{ppFields fields}\n};"
 
 def ppProgram (program : Program) : String :=
@@ -395,8 +398,10 @@ def ppGDeclRaw : GDecl → String
       let paramsStr := String.intercalate ", " (params.map ppParam)
       s!"Fdecl({ppTau retType}, {fname}, external={external}, ({paramsStr}))"
   | .fdefn fdefn => ppFunctionDefRaw fdefn
-  | .sdecl name fields =>
-      s!"StructDecl({name}, [{String.intercalate ", " (fields.map ppParam)}])"
+  | .sdecl name =>
+      s!"StructDecl({name})"
+  | .sdefn name fields =>
+      s!"StructDefn({name}, [{String.intercalate ", " (fields.map ppParam)}])"
 
 def ppProgramRaw (program : Program) : String :=
   s!"Program:\n{String.intercalate "\n" (program.map ppGDeclRaw)}"
