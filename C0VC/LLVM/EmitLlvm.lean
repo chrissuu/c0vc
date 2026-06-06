@@ -13,6 +13,8 @@ def emitTau : IR.Tau → String
   | .i8 => "i8"
   | .i32 => "i32"
   | .void => "void"
+  | .ptr => "ptr"
+  | .struct name => s!"%struct.{name}"
 
 def emitBinOp : IR.BinOp → String
   | .add => "add"
@@ -71,6 +73,7 @@ partial def emitVal : IR.Val → String
   | .void => ""
   | .var t => s!"%{t.name}"
   | .ptr t => s!"%{t.name}"
+  | .null => "null"
   | .bitVec bv => toString (Int32.ofInt (bv.toInt))
 end
 
@@ -108,6 +111,13 @@ def emitStm (retTau : IR.Tau) : IR.Stm → String
 
   | .load dest tau ptr =>
     s!"{emitVal dest} = load {emitTau tau}, ptr {emitVal ptr}"
+
+  | .gep dest sourceType base indices =>
+    s!"{emitVal dest} = getelementptr inbounds {emitTau sourceType}, ptr {emitVal base}, {emitFEvals indices}"
+
+def emitStructDecl (decl : String × List IR.Tau) : String :=
+  let (name, fields) := decl
+  s!"%struct.{name} = type \{ {String.intercalate ", " (fields.map emitTau)} }"
 
 def emitFdefn (fdefn : IR.FunctionDef) : String :=
   let emitStms := fdefn.stms.map (emitStm fdefn.tau)
@@ -157,7 +167,12 @@ def externalDecls (program : IR.Program) : String :=
 
 def emit (program : IR.Program) (fileName : String): IO Unit :=
   let rawProgram := "\n\n".intercalate ((program.filter (fun fdefn => not fdefn.external)).map emitFdefn)
+  let structDecls :=
+    program.foldl (fun acc fdefn => acc ++ fdefn.structs.map emitStructDecl) []
+    |> dedupStrings
+    |> String.intercalate "\n"
   let decls := [runtimeDecls, externalDecls program].filter (fun s => not s.isEmpty)
-  IO.FS.writeFile fileName (String.intercalate "\n" decls ++ "\n\n" ++ rawProgram)
+  let sections := [structDecls, String.intercalate "\n" decls, rawProgram].filter (fun s => not s.isEmpty)
+  IO.FS.writeFile fileName (String.intercalate "\n\n" sections)
 
 end C0VC.LLVM.EmitLlvm

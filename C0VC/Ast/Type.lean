@@ -69,6 +69,11 @@ def collectSEnv (program : Program) : Except String SEnv :=
       | _ => .ok env)
     {}
 
+def collectStructs (program : Program) : List (String × List Field) :=
+  program.filterMap (fun
+    | .sdecl name fields => some (name, fields)
+    | _ => none)
+
 def collectFnDefNames (program : Program) : List String :=
   program.filterMap (fun
     | .fdefn fdefn => some fdefn.fname
@@ -494,7 +499,7 @@ def tcReturnedValuesHaveType (expectedRet : Tau) (tbody : List C0VC.TypedAst.Stm
   else
     .error "return type does not match function return type"
 
-def tcFunctionDef (senv : SEnv) (fenv : FEnv) (fdefn : FunctionDef) : Except String C0VC.TypedAst.FunctionDef := do
+def tcFunctionDef (structs : List (String × List Field)) (senv : SEnv) (fenv : FEnv) (fdefn : FunctionDef) : Except String C0VC.TypedAst.FunctionDef := do
   let venv ← fdefn.params.foldlM
     (fun env (varType, name) =>
       if env.contains name then
@@ -513,18 +518,18 @@ def tcFunctionDef (senv : SEnv) (fenv : FEnv) (fdefn : FunctionDef) : Except Str
   let tbody := tbodyRev.reverse
   let _ ← tcReturnedValuesHaveType fdefn.retType tbody
   if typedBodyGuaranteedReturn tbody || tauEq fdefn.retType .void then
-    .ok { retType := fdefn.retType, fname := fdefn.fname, params := fdefn.params, body := tbody, annotations := tannotations, external := false }
+    .ok { retType := fdefn.retType, fname := fdefn.fname, params := fdefn.params, body := tbody, annotations := tannotations, structs := structs, external := false }
   else
     .error "Could not find a return statement in function definition"
 
-def tcGDecl (senv : SEnv) (fenv : FEnv) : GDecl → Except String (Option C0VC.TypedAst.FunctionDef)
+def tcGDecl (structs : List (String × List Field)) (senv : SEnv) (fenv : FEnv) : GDecl → Except String (Option C0VC.TypedAst.FunctionDef)
   | .fdecl retType fname params external =>
       if external then
-        .ok (some { retType, fname, params, body := [], annotations := [], external := true })
+        .ok (some { retType, fname, params, body := [], annotations := [], structs := structs, external := true })
       else
         .ok none
   | .fdefn fdefn => do
-      let tfdefn ← tcFunctionDef senv fenv fdefn
+      let tfdefn ← tcFunctionDef structs senv fenv fdefn
       .ok (some tfdefn)
   | .sdecl .. =>
       .ok none
@@ -532,8 +537,9 @@ def tcGDecl (senv : SEnv) (fenv : FEnv) : GDecl → Except String (Option C0VC.T
 def tc (program : Program) : Except String C0VC.TypedAst.Program := do
   let _ ← tcMainFn program
   let senv ← collectSEnv program
+  let structs := collectStructs program
   let fenv := collectFEnv program
-  let typed ← program.mapM (tcGDecl senv fenv)
+  let typed ← program.mapM (tcGDecl structs senv fenv)
   .ok (typed.filterMap id)
 
 end C0VC.Typechecker

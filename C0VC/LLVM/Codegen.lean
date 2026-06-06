@@ -21,6 +21,7 @@ structure FunctionInfo where
 deriving Inhabited
 
 abbrev FEnv := Std.HashMap String FunctionInfo
+abbrev SEnv := Std.HashMap String (List Tree.Tau)
 
 structure TempInfo where
   temp : Temp
@@ -90,6 +91,16 @@ def tauOfBinOp : Tree.BinOp → IR.Tau
 def runtimeFunctionInfo (fn : Runtime.Fn) : FunctionInfo :=
   { retTau := Runtime.retTau fn, argsTau := Runtime.argsTau fn, external := true }
 
+partial def treeTauSize (senv : SEnv) : Tree.Tau → Int
+  | .int => 4
+  | .bool => 1
+  | .void => 0
+  | .ptr _ | .array _ | .null => 8
+  | .struct name =>
+      match senv.get? name with
+      | some fields => fields.foldl (fun acc tau => acc + treeTauSize senv tau) 0
+      | none => 8
+
 def calleeOfName (fenv : FEnv) (fname : String) : IR.Callee :=
   match fenv.get? fname with
   | some fInfo =>
@@ -107,8 +118,71 @@ def translateTau : Tree.Tau → IR.Tau
   | .int => .i32
   | .bool => .i1
   | .void => .void
+  | .ptr _ | .array _ | .null => .ptr
+  | .struct name => .struct name
 
-def translateExpr (expr : Tree.Expr) (tc : TempCounter) (fenv : FEnv) (tenv : TEnv): List IR.Stm × IR.Val × IR.Tau × TempCounter × TEnv :=
+mutual
+partial def translateAddr (senv : SEnv) (expr : Tree.Expr) (tc : TempCounter) (fenv : FEnv) (tenv : TEnv): List IR.Stm × IR.Val × IR.Tau × TempCounter × TEnv :=
+  match expr with
+  | .temp var =>
+    match tenv.get? var.name with
+    | some tempInfo =>
+      if tempInfo.isPtr then
+        ([], .ptr tempInfo.temp, tempInfo.tau, tc, tenv)
+      else
+        let (ptr, tc') := Temp.bumpAndCreate tc
+        ( [ .alloca (.ptr ptr) tempInfo.tau
+          , .store tempInfo.tau (.var tempInfo.temp) (.ptr ptr) ]
+        , .ptr ptr
+        , tempInfo.tau
+        , tc'
+        , tenv)
+    | none => panic! s!"[Error] saw a var ({var.name}) used before being defined"
+
+  | .deref ptr tau =>
+    let (stmsPtr, transPtr, _, tc', tenv') := translateExpr senv ptr tc fenv tenv
+    (stmsPtr, transPtr, translateTau tau, tc', tenv')
+
+  | .dot struct structName fieldIndex fieldTau =>
+    let (stmsStruct, structPtr, _, tc', tenv') := translateAddr senv struct tc fenv tenv
+    let (gepTemp, tc'') := Temp.bumpAndCreate tc'
+    let fieldIndexVal : IR.Val := .bitVec (BitVec.ofInt 32 fieldIndex)
+    ( stmsStruct ++ [ .gep (.ptr gepTemp) (.struct structName) structPtr [(.i32, .bitVec 0), (.i32, fieldIndexVal)] ]
+    , .ptr gepTemp
+    , translateTau fieldTau
+    , tc''
+    , tenv')
+
+  | .arrow structPtr structName fieldIndex fieldTau =>
+    let (stmsStructPtr, transStructPtr, _, tc', tenv') := translateExpr senv structPtr tc fenv tenv
+    let (gepTemp, tc'') := Temp.bumpAndCreate tc'
+    let fieldIndexVal : IR.Val := .bitVec (BitVec.ofInt 32 fieldIndex)
+    ( stmsStructPtr ++ [ .gep (.ptr gepTemp) (.struct structName) transStructPtr [(.i32, .bitVec 0), (.i32, fieldIndexVal)] ]
+    , .ptr gepTemp
+    , translateTau fieldTau
+    , tc''
+    , tenv')
+
+  | .arrAccess arr index elemTau =>
+    let (stmsArr, transArr, _, tc', tenv') := translateExpr senv arr tc fenv tenv
+    let (stmsIndex, transIndex, _, tc'', tenv'') := translateExpr senv index tc' fenv tenv'
+    let (gepTemp, tc''') := Temp.bumpAndCreate tc''
+    ( stmsArr ++ stmsIndex ++ [ .gep (.ptr gepTemp) (translateTau elemTau) transArr [(.i32, transIndex)] ]
+    , .ptr gepTemp
+    , translateTau elemTau
+    , tc'''
+    , tenv'')
+
+  | _ =>
+    let (stms, transVal, tau, tc', tenv') := translateExpr senv expr tc fenv tenv
+    let (ptr, tc'') := Temp.bumpAndCreate tc'
+    ( stms ++ [ .alloca (.ptr ptr) tau, .store tau transVal (.ptr ptr) ]
+    , .ptr ptr
+    , tau
+    , tc''
+    , tenv')
+
+partial def translateExpr (senv : SEnv) (expr : Tree.Expr) (tc : TempCounter) (fenv : FEnv) (tenv : TEnv): List IR.Stm × IR.Val × IR.Tau × TempCounter × TEnv :=
   match expr with
   | .const tau val =>
     ( []
@@ -143,8 +217,8 @@ def translateExpr (expr : Tree.Expr) (tc : TempCounter) (fenv : FEnv) (tenv : TE
 
   | .binop op tau lhs rhs =>
     -- let tau : IR.Tau := if isCmpOp op then .i1 else .i32
-    let (stmsLhs, transLhs, _, tc', tenv') := translateExpr lhs tc fenv tenv
-    let (stmsRhs, transRhs, _, tc'', tenv'') := translateExpr rhs tc' fenv tenv'
+    let (stmsLhs, transLhs, _, tc', tenv') := translateExpr senv lhs tc fenv tenv
+    let (stmsRhs, transRhs, _, tc'', tenv'') := translateExpr senv rhs tc' fenv tenv'
     let (temp, tc''') := Temp.bumpAndCreate tc''
     ( stmsLhs ++ stmsRhs ++ [ .assign (.var temp) (.binop (translateBinOp op) (translateTau tau) transLhs transRhs) ]
     , .var temp
@@ -157,7 +231,7 @@ def translateExpr (expr : Tree.Expr) (tc : TempCounter) (fenv : FEnv) (tenv : TE
     let (stms, transArgs, tc', tenv') :=
       List.foldr
       (λ expr (stmsAcc, argsAcc, tcAcc, tenvAcc) =>
-        let (stms', expr', _, tc', tenv') := translateExpr expr tcAcc fenv tenvAcc
+        let (stms', expr', _, tc', tenv') := translateExpr senv expr tcAcc fenv tenvAcc
         (stms' ++ stmsAcc, expr' :: argsAcc, tc', tenv')
       )
       ([], [], tc, tenv)
@@ -186,7 +260,7 @@ def translateExpr (expr : Tree.Expr) (tc : TempCounter) (fenv : FEnv) (tenv : TE
     let (stms, transArgs, tc', tenv') :=
       List.foldr
       (λ expr (stmsAcc, argsAcc, tcAcc, tenvAcc) =>
-        let (stms', expr', _, tc', tenv') := translateExpr expr tcAcc fenv tenvAcc
+        let (stms', expr', _, tc', tenv') := translateExpr senv expr tcAcc fenv tenvAcc
         (stms' ++ stmsAcc, expr' :: argsAcc, tc', tenv')
       )
       ([], [], tc, tenv)
@@ -210,6 +284,43 @@ def translateExpr (expr : Tree.Expr) (tc : TempCounter) (fenv : FEnv) (tenv : TE
       , tc''
       , tenv'
       )
+
+  | .null =>
+    ([], .null, .ptr, tc, tenv)
+
+  | .alloc tau =>
+    let (temp, tc') := Temp.bumpAndCreate tc
+    let sizeVal : IR.Val := .bitVec (BitVec.ofInt 32 (treeTauSize senv tau))
+    ( [ .assign (.var temp) (.call .ptr (.runtime (Runtime.name .alloc)) [(.i32, sizeVal)]) ]
+    , .var temp
+    , .ptr
+    , tc'
+    , tenv)
+
+  | .allocArray tau size =>
+    let (stmsSize, transSize, _, tc', tenv') := translateExpr senv size tc fenv tenv
+    let (temp, tc'') := Temp.bumpAndCreate tc'
+    let elemSizeVal : IR.Val := .bitVec (BitVec.ofInt 32 (treeTauSize senv tau))
+    ( stmsSize ++ [ .assign (.var temp) (.call .ptr (.runtime (Runtime.name .allocArray)) [(.i32, transSize), (.i32, elemSizeVal)]) ]
+    , .var temp
+    , .ptr
+    , tc''
+    , tenv')
+
+  | .deref _ tau
+  | .dot _ _ _ tau
+  | .arrow _ _ _ tau
+  | .arrAccess _ _ tau =>
+    let (stmsAddr, addr, _, tc', tenv') := translateAddr senv expr tc fenv tenv
+    let (temp, tc'') := Temp.bumpAndCreate tc'
+    let tau' := translateTau tau
+    ( stmsAddr ++ [ .load (.var temp) tau' addr ]
+    , .var temp
+    , tau'
+    , tc''
+    , tenv')
+
+end
 
 def mkFenv (program : Tree.Program) : FEnv :=
   List.foldl
@@ -248,6 +359,7 @@ def isOfPtr (temp : Temp) (tenv : TEnv) : Bool :=
   | _ => false
 
 def translateCmd
+  (senv : SEnv)
   (cmd : Tree.Command)
   (tc : TempCounter)
   (lc : LabelCounter)
@@ -266,7 +378,7 @@ def translateCmd
 
   | .move dest src =>
     -- transVal will be an atom (i.e., reg, imm) at this point
-    let (stms, transVal, tau, tc', tenv') := translateExpr src tc fenv tenv
+    let (stms, transVal, tau, tc', tenv') := translateExpr senv src tc fenv tenv
     let bindDestToPtr (tcBase : TempCounter) (tenvBase : TEnv) :=
       let (ptr, tcNext) := Temp.bumpAndCreate tcBase
       let destTempInfo := TempInfo.mk ptr tau true
@@ -317,7 +429,7 @@ def translateCmd
     let (stms, transArgs, tc', tenv') :=
       List.foldr
       (λ expr (stmsAcc, argsAcc, tcAcc, tenvAcc) =>
-        let (stms', expr', _, tc', tenv') := translateExpr expr tcAcc fenv tenvAcc
+        let (stms', expr', _, tc', tenv') := translateExpr senv expr tcAcc fenv tenvAcc
         (stms' ++ stmsAcc, expr' :: argsAcc, tc', tenv')
       )
       ([], [], tc, tenv)
@@ -341,7 +453,7 @@ def translateCmd
     let (stms, transArgs, tc', tenv') :=
       List.foldr
       (λ expr (stmsAcc, argsAcc, tcAcc, tenvAcc) =>
-        let (stms', expr', _, tc', tenv') := translateExpr expr tcAcc fenv tenvAcc
+        let (stms', expr', _, tc', tenv') := translateExpr senv expr tcAcc fenv tenvAcc
         (stms' ++ stmsAcc, expr' :: argsAcc, tc', tenv')
       )
       ([], [], tc, tenv)
@@ -363,7 +475,7 @@ def translateCmd
       , tenv')
 
   | .ite test thenBranch elseBranch =>
-    let (stms, transTest, _, tc', tenv') := translateExpr test tc fenv tenv
+    let (stms, transTest, _, tc', tenv') := translateExpr senv test tc fenv tenv
 
     ( stms ++ [ .brIte transTest thenBranch elseBranch]
     , tc'
@@ -390,7 +502,7 @@ def translateCmd
   | .ret valOpt =>
     match valOpt with
     | some expr =>
-      let (stms, transExpr, _, tc', tenv') := translateExpr expr tc fenv tenv
+      let (stms, transExpr, _, tc', tenv') := translateExpr senv expr tc fenv tenv
 
       ( stms ++ [ .ret transExpr ]
       , tc'
@@ -413,11 +525,14 @@ def translateArg (arg : Tree.Arg) : IR.Arg :=
 def translateArgs (args : List Tree.Arg) : List IR.Arg := List.map translateArg args
 
 def translateFdefn (fdefn : Tree.FunctionDef) (fenv : FEnv) : IR.FunctionDef :=
+  let structs := fdefn.structs.map (fun (name, fields) => (name, fields.map (fun (tau, _) => translateTau tau)))
+  let senv : SEnv := fdefn.structs.foldl (fun env (name, fields) => env.insert name (fields.map (fun (tau, _) => tau))) {}
   if fdefn.external then
     { fname := fdefn.fname
     , tau := translateTau fdefn.tau
     , args := translateArgs fdefn.args
     , stms := []
+    , structs := structs
     , external := true }
   else
 
@@ -437,7 +552,7 @@ def translateFdefn (fdefn : Tree.FunctionDef) (fenv : FEnv) : IR.FunctionDef :=
     let (transCmds, _, _, _) :=
       List.foldl
       (λ (stmsAcc, tcAcc, lcAcc, tenvAcc) cmd =>
-        let (stms, tc', lc', tenv') := translateCmd cmd tcAcc lcAcc fenv tenvAcc
+        let (stms, tc', lc', tenv') := translateCmd senv cmd tcAcc lcAcc fenv tenvAcc
         (stmsAcc ++ stms, tc', lc', tenv')
       )
       (stms, tc', 0, seededTEnv')
@@ -447,6 +562,7 @@ def translateFdefn (fdefn : Tree.FunctionDef) (fenv : FEnv) : IR.FunctionDef :=
     , tau := translateTau fdefn.tau
     , args := translateArgs fdefn.args
     , stms := transCmds
+    , structs := structs
     , external := false }
 
 /-

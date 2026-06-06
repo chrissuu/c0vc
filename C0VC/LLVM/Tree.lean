@@ -39,6 +39,10 @@ inductive Tau where
   | int
   | bool
   | void
+  | ptr (tau : Tau)
+  | array (tau : Tau)
+  | struct (name : String)
+  | null
 deriving Inhabited
 
 inductive Expr where
@@ -50,6 +54,13 @@ inductive Expr where
   | binop (op : BinOp) (tau : Tau) (lhs : Expr) (rhs : Expr)
   | call (fname : String) (args : List Expr)
   | runtimeCall (fn : Runtime.Fn) (args : List Expr)
+  | null
+  | alloc (tau : Tau)
+  | allocArray (tau : Tau) (size : Expr)
+  | deref (ptr : Expr) (tau : Tau)
+  | dot (struct : Expr) (structName : String) (fieldIndex : Nat) (fieldTau : Tau)
+  | arrow (structPtr : Expr) (structName : String) (fieldIndex : Nat) (fieldTau : Tau)
+  | arrAccess (arr : Expr) (index : Expr) (elemTau : Tau)
 deriving Inhabited
 
 inductive Command where
@@ -70,6 +81,7 @@ structure FunctionDef where
   tau : Tau
   args : List Arg
   commands : List Command
+  structs : List (String × List (Tau × String)) := []
   external : Bool := false
 
 abbrev Program := List FunctionDef
@@ -101,6 +113,10 @@ def ppTau : Tau → String
   | .int => "int"
   | .bool => "bool"
   | .void => "void"
+  | .ptr tau => s!"{ppTau tau}*"
+  | .array tau => s!"{ppTau tau}[]"
+  | .struct name => s!"struct {name}"
+  | .null => "null"
 
 def ppArg (arg : Arg) : String :=
   let (tau, temp) := arg
@@ -115,6 +131,13 @@ partial def ppExpr : Expr → String
   | .binop op _ lhs rhs => s!"({ppExpr lhs} {ppBinOp op} {ppExpr rhs})"
   | .call fname args => s!"call {fname}({String.intercalate ", " (List.map ppExpr args)})"
   | .runtimeCall fn args => s!"runtime_call {Runtime.name fn}({String.intercalate ", " (List.map ppExpr args)})"
+  | .null => "NULL"
+  | .alloc tau => s!"alloc({ppTau tau})"
+  | .allocArray tau size => s!"alloc_array({ppTau tau}, {ppExpr size})"
+  | .deref ptr _ => s!"*({ppExpr ptr})"
+  | .dot struct _ idx _ => s!"{ppExpr struct}.#{idx}"
+  | .arrow structPtr _ idx _ => s!"{ppExpr structPtr}->#{idx}"
+  | .arrAccess arr index _ => s!"{ppExpr arr}[{ppExpr index}]"
 
 def ppCommand : Command → String
   | .declare dest tau => s!"{dest.name} : {ppTau tau};"
@@ -162,6 +185,20 @@ partial def ppExprRaw (indentLevel : Nat) : Expr → String
   | .runtimeCall fn args =>
       let argsStr := String.intercalate ",\n" (args.map (ppExprRaw (indentLevel + 1)))
       s!"{spaces indentLevel}RuntimeCall({Runtime.name fn}, [\n{argsStr}\n{spaces indentLevel}])"
+  | .null =>
+      s!"{spaces indentLevel}Null"
+  | .alloc tau =>
+      s!"{spaces indentLevel}Alloc({ppTau tau})"
+  | .allocArray tau size =>
+      s!"{spaces indentLevel}AllocArray({ppTau tau},\n{ppExprRaw (indentLevel + 1) size}\n{spaces indentLevel})"
+  | .deref ptr tau =>
+      s!"{spaces indentLevel}Deref({ppTau tau},\n{ppExprRaw (indentLevel + 1) ptr}\n{spaces indentLevel})"
+  | .dot struct structName idx tau =>
+      s!"{spaces indentLevel}Dot({structName}, {idx}, {ppTau tau},\n{ppExprRaw (indentLevel + 1) struct}\n{spaces indentLevel})"
+  | .arrow structPtr structName idx tau =>
+      s!"{spaces indentLevel}Arrow({structName}, {idx}, {ppTau tau},\n{ppExprRaw (indentLevel + 1) structPtr}\n{spaces indentLevel})"
+  | .arrAccess arr index tau =>
+      s!"{spaces indentLevel}ArrAccess({ppTau tau},\n{ppExprRaw (indentLevel + 1) arr},\n{ppExprRaw (indentLevel + 1) index}\n{spaces indentLevel})"
 
 partial def ppCommandRaw (indentLevel : Nat) : Command → String
   | .declare dest tau =>

@@ -51,3 +51,28 @@ int __c0vc_checked_shl(int lhs, int rhs) {
   }
   return (int)((uint32_t)lhs << rhs);
 }
+
+void* __c0vc_alloc(int size) {
+  if (size <= 0) {
+    __c0vc_abort("invalid allocation size");
+  }
+  void* ptr = calloc(1, (size_t)size);
+  if (ptr == NULL) {
+    __c0vc_abort("out of memory");
+  }
+  return ptr;
+}
+
+void* __c0vc_alloc_array(int count, int elem_size) {
+  if (count < 0 || elem_size <= 0) {
+    __c0vc_abort("invalid array allocation size");
+  }
+  if (elem_size != 0 && count > INT_MAX / elem_size) {
+    __c0vc_abort("array allocation size overflow");
+  }
+  void* ptr = calloc((size_t)count, (size_t)elem_size);
+  if (ptr == NULL && count != 0) {
+    __c0vc_abort("out of memory");
+  }
+  return ptr;
+}

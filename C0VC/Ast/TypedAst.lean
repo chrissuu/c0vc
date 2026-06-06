@@ -5,6 +5,7 @@ namespace C0VC.TypedAst
 abbrev Tau := C0VC.ElabbedAst.Tau
 abbrev BinOp := C0VC.ElabbedAst.BinOp
 abbrev Param := Tau × String
+abbrev Field := Tau × String
 
 mutual
 inductive Expr where
@@ -62,6 +63,7 @@ structure FunctionDef where
   params : List Param
   body : List Stm
   annotations : List Stm
+  structs : List (String × List Field) := []
   external : Bool := false
 
 abbrev Program := List FunctionDef

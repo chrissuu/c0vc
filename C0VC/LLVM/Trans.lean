@@ -11,6 +11,7 @@ open C0VC.Utils.Label
 open C0VC.Utils.Temp
 
 abbrev TempEnv := Std.HashMap String Temp
+abbrev SEnv := Std.HashMap String (List C0VC.TypedAst.Field)
 
 -- TODO: consider wrapping env meta things into here / change to StateM
 structure Env where
@@ -23,15 +24,38 @@ def translateTau : C0VC.TypedAst.Tau → Tree.Tau
   | .bool => .bool
   | .string => panic! "[Error] strings are not yet handled"
   | .void => .void
+  | .struct name => .struct name
+  | .ptr tau => .ptr (translateTau tau)
+  | .array tau => .array (translateTau tau)
+  | .null => .null
 
 def defaultValOfTau : C0VC.TypedAst.Tau → Tree.Expr
   | .int => .const .int 0
   | .bool => .const .bool 0
   | .void => .const .void 0
+  | .ptr _ | .array _ | .null => .null
 
   -- TODO
   | .char
   | .string => .const .int 0
+  | .struct _ => .null
+
+def collectSEnv (structs : List (String × List C0VC.TypedAst.Field)) : SEnv :=
+  structs.foldl (fun env (name, fields) => env.insert name fields) {}
+
+def findFieldIndex? (fields : List C0VC.TypedAst.Field) (field : String) : Option Nat :=
+  let rec go (idx : Nat) : List C0VC.TypedAst.Field → Option Nat
+    | [] => none
+    | (_, name) :: rest => if name == field then some idx else go (idx + 1) rest
+  go 0 fields
+
+def lookupFieldIndex (senv : SEnv) (structName field : String) : Nat :=
+  match senv.get? structName with
+  | some fields =>
+      match findFieldIndex? fields field with
+      | some idx => idx
+      | none => panic! s!"[Error] struct {structName} has no field {field}"
+  | none => panic! s!"[Error] struct {structName} used before declaration"
 
 
 def translateBinOp (op: C0VC.TypedAst.BinOp) : Tree.BinOp :=
@@ -63,6 +87,7 @@ def tauOfBinOp : C0VC.TypedAst.BinOp → Tree.Tau
   | _ => .int
 
 partial def translateExpr
+  (senv : SEnv)
   (texpr : C0VC.TypedAst.TypedExpr)
   (env : Std.HashMap String Temp)
   (tc : TempCounter)
@@ -80,8 +105,8 @@ partial def translateExpr
 
   | .binop op lhs rhs =>
     let (tempRes, tc') := Temp.bumpAndCreate tc
-    let (cmdsLhs, transLhs, env', tc'', lc') := translateExpr lhs env tc' lc
-    let (cmdsRhs, transRhs, env'', tc''', lc'') := translateExpr rhs env' tc'' lc'
+    let (cmdsLhs, transLhs, env', tc'', lc') := translateExpr senv lhs env tc' lc
+    let (cmdsRhs, transRhs, env'', tc''', lc'') := translateExpr senv rhs env' tc'' lc'
     let cmd :=
 
       -- in C0, division/modulus by zero is not undefined behavior and instead always
@@ -109,12 +134,12 @@ partial def translateExpr
   -- TODO: LLVM supports select. is this really something we want to elaborate?
   | .ternary test thenVal elseVal =>
     let (tempRes, tc') := Temp.bumpAndCreate tc
-    let (cmdsTest, transTest, env', tc'', lc') := translateExpr test env tc' lc
+    let (cmdsTest, transTest, env', tc'', lc') := translateExpr senv test env tc' lc
     let (labelThen, lc'') := Label.bumpAndCreate lc'
     let (labelElse, lc''') := Label.bumpAndCreate lc''
 
-    let (cmdsThen, transThen, env'', tc''', lc''') := translateExpr thenVal env' tc'' lc'''
-    let (cmdsElse, transElse, env''', tc'''', lc'''') := translateExpr elseVal env'' tc''' lc'''
+    let (cmdsThen, transThen, env'', tc''', lc''') := translateExpr senv thenVal env' tc'' lc'''
+    let (cmdsElse, transElse, env''', tc'''', lc'''') := translateExpr senv elseVal env'' tc''' lc'''
     let (labelDone, lc''''') := Label.bumpAndCreate lc''''
 
     ([.declare tempRes (translateTau texpr.tau)]
@@ -145,7 +170,7 @@ partial def translateExpr
   | .call fname args =>
     let (argCmds, argExps, env', tc', lc') := List.foldr
       (λ arg (cmdsAcc, expsAcc, envAcc, tcAcc, lcAcc) =>
-        let (cmds, exp, env'', tc''', lc'') := translateExpr arg envAcc tcAcc lcAcc
+        let (cmds, exp, env'', tc''', lc'') := translateExpr senv arg envAcc tcAcc lcAcc
         (cmds ++ cmdsAcc, exp :: expsAcc, env'', tc''', lc'')
       )
       ([], [], env, tc, lc)
@@ -161,8 +186,33 @@ partial def translateExpr
   | .result => ([], .const .int 0, env, tc, lc)
   | .hastag => ([], .const .int 0, env, tc, lc)
   | .stringLit _ => ([], .const .int 0, env, tc, lc)
+  | .null => ([], .null, env, tc, lc)
+  | .alloc tau => ([], .alloc (translateTau tau), env, tc, lc)
+  | .allocArray tau size =>
+      let (cmdsSize, transSize, env', tc', lc') := translateExpr senv size env tc lc
+      (cmdsSize, .allocArray (translateTau tau) transSize, env', tc', lc')
+  | .deref ptr =>
+      let (cmdsPtr, transPtr, env', tc', lc') := translateExpr senv ptr env tc lc
+      (cmdsPtr, .deref transPtr (translateTau texpr.tau), env', tc', lc')
+  | .arrAccess arr index =>
+      let (cmdsArr, transArr, env', tc', lc') := translateExpr senv arr env tc lc
+      let (cmdsIndex, transIndex, env'', tc'', lc'') := translateExpr senv index env' tc' lc'
+      (cmdsArr ++ cmdsIndex, .arrAccess transArr transIndex (translateTau texpr.tau), env'', tc'', lc'')
+  | .dot struct field =>
+      let (cmdsStruct, transStruct, env', tc', lc') := translateExpr senv struct env tc lc
+      match struct.tau with
+      | .struct structName =>
+          (cmdsStruct, .dot transStruct structName (lookupFieldIndex senv structName field) (translateTau texpr.tau), env', tc', lc')
+      | _ => panic! "[Error] dot expected struct type"
+  | .arrow structPtr field =>
+      let (cmdsStructPtr, transStructPtr, env', tc', lc') := translateExpr senv structPtr env tc lc
+      match structPtr.tau with
+      | .ptr (.struct structName) =>
+          (cmdsStructPtr, .arrow transStructPtr structName (lookupFieldIndex senv structName field) (translateTau texpr.tau), env', tc', lc')
+      | _ => panic! "[Error] arrow expected pointer-to-struct type"
 
 partial def translateStm
+  (senv : SEnv)
   (mstm : C0VC.TypedAst.Stm)
   (env : Std.HashMap String Temp)
   (tc : TempCounter)
@@ -170,7 +220,7 @@ partial def translateStm
   : List Tree.Command × TempEnv × TempCounter × LabelCounter :=
   match mstm with
   | .assign varName val =>
-    let (cmds, expr, env', tc', lc') := translateExpr val env tc lc
+    let (cmds, expr, env', tc', lc') := translateExpr senv val env tc lc
     match env.get? varName with
     | some temp =>
       (cmds ++ [.move temp expr], env', tc', lc')
@@ -187,9 +237,9 @@ partial def translateStm
         | _ => true
       | _ => true
 
-    let (cmdsTest, transTest, env', tc', lc') := translateExpr test env tc lc
-    let (cmdsThen, env'', tc'', lc'') := translateStm thenBranch env' tc' lc'
-    let (cmdsElse, env''', tc''', lc''') := translateStm elseBranch env'' tc'' lc''
+    let (cmdsTest, transTest, env', tc', lc') := translateExpr senv test env tc lc
+    let (cmdsThen, env'', tc'', lc'') := translateStm senv thenBranch env' tc' lc'
+    let (cmdsElse, env''', tc''', lc''') := translateStm senv elseBranch env'' tc'' lc''
 
     let (labelThen, lc'''') := Label.bumpAndCreate lc'''
     let emitLabelThen := emitLabel cmdsThen
@@ -212,8 +262,8 @@ partial def translateStm
     )
 
   | .whileLit test body =>
-    let (cmdsTest, transTest, env', tc', lc') := translateExpr test env tc lc
-    let (cmdsBody, env'', tc'', lc'') := translateStm body env' tc' lc'
+    let (cmdsTest, transTest, env', tc', lc') := translateExpr senv test env tc lc
+    let (cmdsBody, env'', tc'', lc'') := translateStm senv body env' tc' lc'
 
     let (labelGuard, lc''') := Label.bumpAndCreateNamed lc'' "cond"
     let (labelBody, lc'''') := Label.bumpAndCreateNamed lc''' "body"
@@ -234,14 +284,14 @@ partial def translateStm
   | .ret valOpt =>
     match valOpt with
     | some retVal =>
-      let (cmdsRetVal, transRetVal, env', tc', lc') := translateExpr retVal env tc lc
+      let (cmdsRetVal, transRetVal, env', tc', lc') := translateExpr senv retVal env tc lc
       (cmdsRetVal ++ [.ret (some transRetVal)], env', tc', lc')
     | none => ([.ret none], env, tc, lc)
 
 
   | .seq first rest =>
-    let (cmdsFirst, env', tc', lc') := translateStm first env tc lc
-    let (cmdsRest, env'', tc'', lc'') := translateStm rest env' tc' lc'
+    let (cmdsFirst, env', tc', lc') := translateStm senv first env tc lc
+    let (cmdsRest, env'', tc'', lc'') := translateStm senv rest env' tc' lc'
 
     (cmdsFirst ++ cmdsRest
     , env''
@@ -254,22 +304,22 @@ partial def translateStm
     let (cmdsInit, tc'', lc'', envAfterInit) :=
       match init with
       | some initExpr =>
-          let (cmds, transInit, env', tc'', lc'') := translateExpr initExpr env tc' lc
+          let (cmds, transInit, env', tc'', lc'') := translateExpr senv initExpr env tc' lc
           (cmds ++ [Tree.Command.move temp transInit], tc'', lc'', env')
       | none =>
           ([Tree.Command.move temp defaultVal], tc', lc, env)
-    let (cmdsValue, env', tc''', lc''') := translateStm value (envAfterInit.insert varName temp) tc'' lc''
+    let (cmdsValue, env', tc''', lc''') := translateStm senv value (envAfterInit.insert varName temp) tc'' lc''
     (cmdsInit ++ cmdsValue, env'.erase varName, tc''', lc''')
 
   | .expr mexpr =>
-    let (cmds, _, env', tc', lc') := translateExpr mexpr env tc lc
+    let (cmds, _, env', tc', lc') := translateExpr senv mexpr env tc lc
     (cmds, env', tc', lc')
 
   | .nop => ([], env, tc, lc)
 
   -- TODO
   | .assert test =>
-    let (cmds, transTest, env', tc'', lc') := translateExpr test env tc lc
+    let (cmds, transTest, env', tc'', lc') := translateExpr senv test env tc lc
 
     ( cmds ++
       [ .runtimeCall .assert [transTest] ]
@@ -286,11 +336,14 @@ def translateParam (param : C0VC.TypedAst.Param) : Tree.Arg :=
   (translateTau tau, Temp.fromName name)
 
 def translateFunctionDef (fdefn : C0VC.TypedAst.FunctionDef) : Tree.FunctionDef :=
+  let senv := collectSEnv fdefn.structs
+  let structs := fdefn.structs.map (fun (name, fields) => (name, fields.map (fun (tau, fieldName) => (translateTau tau, fieldName))))
   if fdefn.external then
     { fname := fdefn.fname
     , tau := translateTau fdefn.retType
     , args := fdefn.params.map translateParam
     , commands := []
+    , structs := structs
     , external := true }
   else
   let params := fdefn.params
@@ -305,7 +358,7 @@ def translateFunctionDef (fdefn : C0VC.TypedAst.FunctionDef) : Tree.FunctionDef 
 
   let (cmds, _, _, _) := (List.foldl
     (λ (cmdsAcc, envAcc, tcAcc, lcAcc) mstm =>
-      let (cmds, env', tc', lc') := translateStm mstm envAcc tcAcc lcAcc
+      let (cmds, env', tc', lc') := translateStm senv mstm envAcc tcAcc lcAcc
       (cmdsAcc ++ cmds, env', tc', lc')
     )
     ([], seededEnv, tc, 0)
@@ -314,6 +367,7 @@ def translateFunctionDef (fdefn : C0VC.TypedAst.FunctionDef) : Tree.FunctionDef 
   , tau := translateTau fdefn.retType
   , args := params'
   , commands := cmds
+  , structs := structs
   , external := false }
 
 def translate (program : C0VC.TypedAst.Program) : Tree.Program :=

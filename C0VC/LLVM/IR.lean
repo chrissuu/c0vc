@@ -10,6 +10,8 @@ inductive Tau where
   | i8
   | i32
   | void
+  | ptr
+  | struct (name : String)
 deriving Inhabited
 
 abbrev ValName := String
@@ -44,6 +46,7 @@ inductive Val where
   | void
   | var (t : Temp)
   | ptr (t : Temp)
+  | null
   /-- Types are enforced upstream by typechecker. At this point, types are only needed for LLVM emitting,
   so treating (most) types as 32-bit bitvectors allows for the full range of Tau's to be represented
   conveniently. -/
@@ -65,6 +68,7 @@ inductive Stm where
   | alloca (ptr : Val) (type : Tau)
   | store (tau : Tau) (val : Val) (ptr : Val)
   | load (dest : Val) (tau : Tau) (ptr : Val)
+  | gep (dest : Val) (sourceType : Tau) (base : Val) (indices : List (Tau × Val))
 deriving Inhabited
 
 structure FunctionDef where
@@ -72,6 +76,7 @@ structure FunctionDef where
   tau : Tau
   args : List Arg
   stms : List Stm
+  structs : List (String × List Tau) := []
   external : Bool := false
 
 abbrev Program := List FunctionDef
@@ -85,6 +90,8 @@ def ppTau : Tau → String
   | .i8 => "i8"
   | .i32 => "i32"
   | .void => "void"
+  | .ptr => "ptr"
+  | .struct name => s!"%struct.{name}"
 
 def ppBinOp : BinOp → String
   | .add => "add"
@@ -108,6 +115,7 @@ def ppVal : Val → String
   | .void => "void"
   | .var t => t.name
   | .ptr t => s!"*{t.name}"
+  | .null => "null"
   | .bitVec bitVec => toString (Int32.ofInt bitVec.toInt)
 
 def ppArg (arg : Arg) : String :=
@@ -140,6 +148,8 @@ def ppStm : Stm → String
   | .alloca ptr tau => s!"alloca {ppVal ptr} : {ppTau tau};"
   | .store tau val ptr => s!"store {ppTau tau} {ppVal val} -> {ppVal ptr};"
   | .load dest tau ptr => s!"{ppVal dest} <- load {ppTau tau} {ppVal ptr};"
+  | .gep dest sourceType base indices =>
+      s!"{ppVal dest} <- gep {ppTau sourceType} {ppVal base}, {String.intercalate ", " (indices.map ppTypedVal)};"
 
 def ppFunctionDef (fdef : FunctionDef) : String :=
   if fdef.external then
@@ -155,6 +165,7 @@ def ppValRaw : Val → String
   | .void => "Void"
   | .var t => s!"Var({t.name})"
   | .ptr t => s!"Ptr({t.name})"
+  | .null => "Null"
   | .bitVec bitVec => s!"BitVec32({Int32.ofInt bitVec.toInt})"
 
 def ppTypedValRaw (typedVal : Tau × Val) : String :=
@@ -196,6 +207,8 @@ def ppStmRaw (indentLevel : Nat) : Stm → String
       s!"{spaces indentLevel}Store({ppTau tau}, {ppValRaw val}, {ppValRaw ptr})"
   | .load dest tau ptr =>
       s!"{spaces indentLevel}Load({ppValRaw dest}, {ppTau tau}, {ppValRaw ptr})"
+  | .gep dest sourceType base indices =>
+      s!"{spaces indentLevel}Gep({ppValRaw dest}, {ppTau sourceType}, {ppValRaw base}, [{String.intercalate ", " (indices.map ppTypedValRaw)}])"
 
 def ppFunctionDefRaw (fdef : FunctionDef) : String :=
   let argsStr := String.intercalate ", " (fdef.args.map ppArg)
