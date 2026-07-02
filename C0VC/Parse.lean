@@ -273,20 +273,12 @@ partial def parsePrimary : P MarkedExpr :=
     parseAllocArrayExpr,
     parseAllocExpr,
     parseLengthExpr,
+    parseFCall,
     parseVar,
     throwUnexpectedWithMessage none "expected expression atom"
   ]
 
 partial def parsePostfixOp : P (MarkedExpr → MarkedExpr) :=
-  (do
-    let _ ← expectKindTokMsg (only .lParen) "expected '('"
-    let args ← parseArgs
-    let _ ← expectKindTokMsg (only .rParen) "expected ')'"
-    pure (fun base =>
-      match base.node with
-      | .var fname => mkExpr (.call fname args)
-      | _ => base))
-  <|>
   (do
     let _ ← expectKindTokMsg (only .dot) "expected '.'"
     let field ← parseFieldName
@@ -597,6 +589,13 @@ def parseSimpleCore : P MarkedStm :=
     <|> parseDecr
     <|> parseExprCore)
 
+def parseForUpdateCore : P MarkedStm :=
+  withErrorMessage "while parsing for update statement" <|
+    (parseAssignCore
+    <|> parseIncr
+    <|> parseDecr
+    <|> parseExprCore)
+
 
 def parseSimpleStm : P MarkedStm := do
   let (s, coreSpan) ← withConsumedSpan parseSimpleCore
@@ -707,7 +706,7 @@ partial def parseForStm : P MarkedStm := do
   let _ ← expectKindTokMsg (only .semicolon) "expected ';' after for init"
   let test ← parseExpr
   let _ ← expectKindTokMsg (only .semicolon) "expected ';' after for test"
-  let update ← (option? parseSimpleCore)
+  let update ← (option? parseForUpdateCore)
   let _ ← expectKindTokMsg (only .rParen) "expected ')' after for update"
   let body ← parseStm
   let initStm := init.getD { node := .nop, span := none }

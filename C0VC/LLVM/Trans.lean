@@ -291,13 +291,13 @@ partial def translateStm
           let (temp, tc') := Temp.bumpAndCreate tc
           (cmds ++ [.move temp expr], env', tc', lc')
     | _ =>
-        -- Non var assignments must evaluate the lvalue location before
-        -- the rhs. This is esp. the case when the lvalue has calls/checks, e.g.
-        -- A[f()] = A[g()] + 1 or p->x = h().
+        -- Evaluate lvalue subexpressions before the rhs, but delay the final
+        -- destination check until the store. This preserves C0's exception
+        -- order for cases like *p = 1 / 0 when p is NULL.
         let (cmdsLhs, lhsExpr, env', tc', lc') := translateLValueExpr senv lhs env tc lc
-        let (checkTemp, tcCheck) := Temp.bumpAndCreate tc'
-        let (cmdsRhs, expr, env'', tc'', lc'') := translateExpr senv val env' tcCheck lc'
-        (cmdsLhs ++ [.move checkTemp lhsExpr] ++ cmdsRhs ++ [.store lhsExpr expr], env'', tc'', lc'')
+        let (cmdsRhs, expr, env'', tc'', lc'') := translateExpr senv val env' tc' lc'
+        let (rhsTemp, tc''') := Temp.bumpAndCreate tc''
+        (cmdsLhs ++ cmdsRhs ++ [.move rhsTemp expr, .store lhsExpr (.temp rhsTemp)], env'', tc''', lc'')
 
   | .ifLit test thenBranch elseBranch =>
     let emitLabel (cmds : List Command) :=
@@ -376,9 +376,9 @@ partial def translateStm
       match init with
       | some initExpr =>
           let (cmds, transInit, env', tc'', lc'') := translateExpr senv initExpr env tc' lc
-          (cmds ++ [Tree.Command.move temp transInit], tc'', lc'', env')
+          ([Tree.Command.declare temp (translateTau tau)] ++ cmds ++ [Tree.Command.move temp transInit], tc'', lc'', env')
       | none =>
-          ([Tree.Command.move temp defaultVal], tc', lc, env)
+          ([Tree.Command.declare temp (translateTau tau), Tree.Command.move temp defaultVal], tc', lc, env)
     let (cmdsValue, env', tc''', lc''') := translateStm senv value (envAfterInit.insert varName temp) tc'' lc''
     (cmdsInit ++ cmdsValue, env'.erase varName, tc''', lc''')
 

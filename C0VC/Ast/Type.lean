@@ -46,10 +46,10 @@ def tauComparable (lhs rhs : Tau) : Bool :=
     false
   else if not (tauIsSmall lhs) || not (tauIsSmall rhs) then
     false
-  else if (match lhs with | .array _ => true | _ => false) || (match rhs with | .array _ => true | _ => false) then
-    false
   else
-    tauEq lhs rhs || (tauEq lhs .null && tauIsRef rhs) || (tauEq rhs .null && tauIsRef lhs)
+    tauEq lhs rhs
+    || (tauEq lhs .null && tauIsRef rhs)
+    || (tauEq rhs .null && tauIsRef lhs)
 
 structure FnInfo where
   retType : Tau
