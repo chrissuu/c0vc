@@ -336,19 +336,24 @@ partial def tcExpr (senv : SEnv) (fenv : FEnv) (resultType : Option Tau) (mexpr 
   | .var name =>
     let info ← tcVarReadable venv name
     .ok (mkTExpr (.var name) info.varType)
+
   | .intLit n =>
     let _ ← tcIntLitRange n
     .ok (mkTExpr (.intLit n) .int)
+
   | .trueLit =>
     .ok (mkTExpr .trueLit .bool)
+
   | .falseLit =>
     .ok (mkTExpr .falseLit .bool)
   | .null =>
     .ok (mkTExpr .null .null)
   | .charLit c =>
     .ok (mkTExpr (.charLit c) .char)
+
   | .stringLit s =>
     .ok (mkTExpr (.stringLit s) .string)
+
   | .binop op lhs rhs =>
     let tlhs ← tcExpr senv fenv resultType lhs venv
     let trhs ← tcExpr senv fenv resultType rhs venv
@@ -356,6 +361,7 @@ partial def tcExpr (senv : SEnv) (fenv : FEnv) (resultType : Option Tau) (mexpr 
       .ok (mkTExpr (.binop op tlhs trhs) (binopType op))
     else
       .error "binary operator arguments have invalid types"
+
   | .ternary test thenVal elseVal =>
     let ttest ← tcExpr senv fenv resultType test venv
     if not (tauEq ttest.tau .bool) then
@@ -371,6 +377,7 @@ partial def tcExpr (senv : SEnv) (fenv : FEnv) (resultType : Option Tau) (mexpr 
       .ok (mkTExpr (.ternary ttest tthen (coerceNullTo tthen.tau telse)) tthen.tau)
     else
       .error "ternary branches have different types"
+
   | .call fname args =>
     if venv.contains fname then
       .error s!"cannot call {fname}: name refers to a local variable"
@@ -380,6 +387,7 @@ partial def tcExpr (senv : SEnv) (fenv : FEnv) (resultType : Option Tau) (mexpr 
       | some info =>
         let targs ← tcCallArgs senv fenv resultType fname args info.params venv
         .ok (mkTExpr (.call fname targs) info.retType)
+
   | .length arrayLike =>
     let tarrayLike ← tcExpr senv fenv resultType arrayLike venv
     match tarrayLike.tau with
@@ -389,6 +397,7 @@ partial def tcExpr (senv : SEnv) (fenv : FEnv) (resultType : Option Tau) (mexpr 
     match resultType with
     | some tau => .ok (mkTExpr .result tau)
     | none => .error "Cannot infer type for annotation-only expression"
+
   | .hastag =>
     .ok (mkTExpr .hastag .bool)
   | .dot struct field =>
@@ -492,12 +501,15 @@ partial def tcAnno (senv : SEnv) (fenv : FEnv) (resultType : Option Tau) (anno :
   | .requires e =>
     let te ← tcExpr senv fenv resultType e venv
     .ok (.requires te)
+
   | .ensures e =>
     let te ← tcExpr senv fenv resultType e venv
     .ok (.ensures te)
+
   | .asserts e =>
     let te ← tcExpr senv fenv resultType e venv
     .ok (.asserts te)
+
   | .loopInvariant e =>
     let te ← tcExpr senv fenv resultType e venv
     .ok (.loopInvariant te)
@@ -784,7 +796,7 @@ def tcProgramOrdered
     ([], {})
   .ok typedRev.reverse
 
-def tc (program : Program) : Except String C0VC.TypedAst.Program := do
+def run (program : Program) : Except String C0VC.TypedAst.Program := do
   let _ ← tcMainFn program
   let senv ← collectSEnv program
   let _ ← checkStructsAcyclic senv

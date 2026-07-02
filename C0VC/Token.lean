@@ -13,7 +13,6 @@ inductive TokenKind where
   | charLit (value : Char)
 
   -- Core Keywords
-  -- C0 reference, page 16, section 14
   -- The reserved keywords of the language are:
   -- int bool string char void struct typedef
   -- if else while for continue break return assert
@@ -25,7 +24,6 @@ inductive TokenKind where
   | kwUse -- #use (for libraries (& headers?))
 
   -- Contracts / Annotations Keywords
-  -- C0 reference, page 18, section 14.3
   | requires
   | ensures
   | loopInvariant

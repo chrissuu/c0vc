@@ -244,9 +244,7 @@ def convertGDecl : C0VC.Ast.GDecl → Except String C0VC.ElabbedAst.GDecl
       let fields' ← fields.mapM convertField
       .ok (.sdefn name fields')
 
-
-
-def convertProgram (program : C0VC.Ast.Program) : Except String C0VC.ElabbedAst.Program := do
+def run (program : C0VC.Ast.Program) : Except String C0VC.ElabbedAst.Program := do
   program.mapM convertGDecl
 
 end C0VC.ElabbedAst.Trans

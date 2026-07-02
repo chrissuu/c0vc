@@ -4,7 +4,8 @@ Top
 Note: consider moving the in-house cmd line parser to a dedicated
 Lean4 command line parser library.
 
-Author: Chris Su <chrjs@cmu.edu>
+Author(s):
+  ~ Chris Su <chrjs@cmu.edu>
 -/
 import C0VC
 
@@ -138,14 +139,14 @@ private def runFrontend (cfg : CliConfig) (infile : String) :
           | .ok program =>
               if cfg.dumpAst then
                 IO.println (C0VC.Ast.Print.ppProgram program)
-              match C0VC.Elab.elabHeaderAndSource headers program with
+              match C0VC.Elab.run headers program with
               | .error err => pure (.error err)
               | .ok elabbedAst =>
                   if cfg.dumpElab then
                     IO.println (C0VC.ElabbedAst.Print.ppProgram elabbedAst)
                   if cfg.dumpElabRaw then
                     IO.println (C0VC.ElabbedAst.Print.ppProgramRaw elabbedAst)
-                  match C0VC.Typechecker.tc elabbedAst with
+                  match C0VC.Typechecker.run elabbedAst with
                   | .error err => pure (.error err)
                   | .ok typedAst =>
                       if cfg.dumpType then
@@ -160,12 +161,12 @@ private def runFrontend (cfg : CliConfig) (infile : String) :
                           IO.println (C0VC.TypedAst.Print.ppProgram dceProgram)
                         if cfg.dumpDceRaw then
                           IO.println (C0VC.TypedAst.Print.ppProgramRaw dceProgram)
-                        let treeProgram := C0VC.LLVM.Tree.Trans.translate dceProgram
+                        let treeProgram := C0VC.LLVM.Tree.Trans.run dceProgram
                         if cfg.dumpTree then
                           IO.println (C0VC.LLVM.Tree.Print.ppProgram treeProgram)
                         if cfg.dumpTreeRaw then
                           IO.println (C0VC.LLVM.Tree.Print.ppProgramRaw treeProgram)
-                        let llvmIR := C0VC.LLVM.Codegen.translateWithConfig { safetyChecks := not cfg.unsafeMode } treeProgram
+                        let llvmIR := C0VC.LLVM.Codegen.run treeProgram
                         if cfg.dumpIrRaw then
                           IO.println (C0VC.LLVM.IR.Print.ppProgramRaw llvmIR)
                         pure (.ok (some llvmIR))
@@ -194,7 +195,7 @@ def main (args : List String) : IO UInt32 := do
   | .ok (some llvmIR) =>
         match cfg.emit with
         | .llvm =>
-            C0VC.LLVM.EmitLlvm.emit llvmIR (outputPath infile ".ll")
+            C0VC.LLVM.EmitLlvm.run llvmIR (outputPath infile ".ll")
         | .exe =>
             let exe := outputPath infile ".exe"
             IO.FS.writeFile exe "#!/bin/sh\necho 0\n"

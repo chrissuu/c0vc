@@ -401,7 +401,9 @@ partial def translateStm
     , env'
     , tc''
     , lc')
+
   | .error _ => panic! "[Error] unimplemented (error)"
+
   | .annotation _ => panic! "[Error] unimplemented (annotation)"
 
 def translateParam (param : C0VC.TypedAst.Param) : Tree.Arg :=
@@ -445,7 +447,7 @@ def translateFunctionDef (fdefn : C0VC.TypedAst.FunctionDef) : Tree.FunctionDef 
   , structs := structs
   , external := false }
 
-def translate (program : C0VC.TypedAst.Program) : Tree.Program :=
+def run (program : C0VC.TypedAst.Program) : Tree.Program :=
   List.map translateFunctionDef program
 
 end C0VC.LLVM.Tree.Trans

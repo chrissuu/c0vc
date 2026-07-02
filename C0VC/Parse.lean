@@ -1,14 +1,13 @@
 /-
 Parser
 
-See C0 reference manual here: https://c0.cs.cmu.edu/docs/c0-reference.pdf
-
 This uses a parser combinator library to parse the tokens produced by the lexer.
 Note: since memory is currently unsupported, this means that our grammar is still
 context free. However, with the introduction of pointers, our grammar will no longer
 become context free and we will need a workaround.
 
-Author: Chris Su <chrjs@cmu.edu>
+Author(s):
+  ~ Chris Su <chrjs@cmu.edu>
 -/
 
 import Parser
@@ -412,8 +411,7 @@ partial def parseLeftAssoc (term : P MarkedExpr) (op : P BinOp) : P MarkedExpr :
   let rest := restRev.reverse
   pure <| List.foldl (fun acc (o, rhs) => mkExpr (.binop o acc rhs)) lhs rest
 
--- These parsers build on each other through the precedence binding strength of C0
--- C0 reference, page 20
+-- These parsers build on each other through the precedence binding strength of C0.
 partial def parseMulExpr : P MarkedExpr :=
   parseLeftAssoc parseUnary parseMulOp
 
