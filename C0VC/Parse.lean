@@ -1,14 +1,13 @@
 /-
 Parser
 
-See C0 reference manual here: https://c0.cs.cmu.edu/docs/c0-reference.pdf
-
 This uses a parser combinator library to parse the tokens produced by the lexer.
 Note: since memory is currently unsupported, this means that our grammar is still
 context free. However, with the introduction of pointers, our grammar will no longer
 become context free and we will need a workaround.
 
-Author: Chris Su <chrjs@cmu.edu>
+Author(s):
+  ~ Chris Su <chrjs@cmu.edu>
 -/
 
 import Parser
@@ -274,20 +273,12 @@ partial def parsePrimary : P MarkedExpr :=
     parseAllocArrayExpr,
     parseAllocExpr,
     parseLengthExpr,
+    parseFCall,
     parseVar,
     throwUnexpectedWithMessage none "expected expression atom"
   ]
 
 partial def parsePostfixOp : P (MarkedExpr → MarkedExpr) :=
-  (do
-    let _ ← expectKindTokMsg (only .lParen) "expected '('"
-    let args ← parseArgs
-    let _ ← expectKindTokMsg (only .rParen) "expected ')'"
-    pure (fun base =>
-      match base.node with
-      | .var fname => mkExpr (.call fname args)
-      | _ => base))
-  <|>
   (do
     let _ ← expectKindTokMsg (only .dot) "expected '.'"
     let field ← parseFieldName
@@ -412,8 +403,7 @@ partial def parseLeftAssoc (term : P MarkedExpr) (op : P BinOp) : P MarkedExpr :
   let rest := restRev.reverse
   pure <| List.foldl (fun acc (o, rhs) => mkExpr (.binop o acc rhs)) lhs rest
 
--- These parsers build on each other through the precedence binding strength of C0
--- C0 reference, page 20
+-- These parsers build on each other through the precedence binding strength of C0.
 partial def parseMulExpr : P MarkedExpr :=
   parseLeftAssoc parseUnary parseMulOp
 
@@ -599,6 +589,13 @@ def parseSimpleCore : P MarkedStm :=
     <|> parseDecr
     <|> parseExprCore)
 
+def parseForUpdateCore : P MarkedStm :=
+  withErrorMessage "while parsing for update statement" <|
+    (parseAssignCore
+    <|> parseIncr
+    <|> parseDecr
+    <|> parseExprCore)
+
 
 def parseSimpleStm : P MarkedStm := do
   let (s, coreSpan) ← withConsumedSpan parseSimpleCore
@@ -709,7 +706,7 @@ partial def parseForStm : P MarkedStm := do
   let _ ← expectKindTokMsg (only .semicolon) "expected ';' after for init"
   let test ← parseExpr
   let _ ← expectKindTokMsg (only .semicolon) "expected ';' after for test"
-  let update ← (option? parseSimpleCore)
+  let update ← (option? parseForUpdateCore)
   let _ ← expectKindTokMsg (only .rParen) "expected ')' after for update"
   let body ← parseStm
   let initStm := init.getD { node := .nop, span := none }

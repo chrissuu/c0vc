@@ -165,7 +165,7 @@ def dedupStrings : List String → List String :=
 def externalDecls (program : IR.Program) : String :=
   String.intercalate "\n" (dedupStrings ((program.filter (fun fdefn => fdefn.external)).map emitExternalDecl))
 
-def emit (program : IR.Program) (fileName : String): IO Unit :=
+def run (program : IR.Program) (fileName : String): IO Unit :=
   let rawProgram := "\n\n".intercalate ((program.filter (fun fdefn => not fdefn.external)).map emitFdefn)
   let structDecls :=
     program.foldl (fun acc fdefn => acc ++ fdefn.structs.map emitStructDecl) []

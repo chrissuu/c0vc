@@ -655,7 +655,7 @@ def fillVoidReturns (stms : List IR.Stm) : List IR.Stm :=
       s2 :: fillVoidReturns ss
     | _ => s1::fillVoidReturns (s2::ss)
 
-def translateWithConfig (cfg : Config) (program : Tree.Program) : IR.Program :=
+def runWithConfig (cfg : Config) (program : Tree.Program) : IR.Program :=
   let fenvInit := mkFenv program
 
   List.foldl
@@ -668,7 +668,7 @@ def translateWithConfig (cfg : Config) (program : Tree.Program) : IR.Program :=
   []
   program
 
-def translate (program : Tree.Program) : IR.Program :=
-  translateWithConfig {} program
+def run (program : Tree.Program) : IR.Program :=
+  runWithConfig {} program
 
 end C0VC.LLVM.Codegen

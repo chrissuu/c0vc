@@ -21,7 +21,8 @@ AST.
 The elaborator also resolves typedefs that may have been defined throughout
 the source file.
 
-Author: Chris Su <chrjs@cmu.edu>
+Author(s):
+  ~ Chris Su <chrjs@cmu.edu>
 -/
 
 import C0VC.Ast.ParsedAst
@@ -660,11 +661,11 @@ private def elabSourceWithHeaderEnv
       .ok (List.reverse elabbedSource)
   | .error err => .error err
 
-def elabHeaderAndSource (header : Ast.Program) (source : Ast.Program) :
+def run (header : Ast.Program) (source : Ast.Program) :
     Except String C0VC.ElabbedAst.Program := do
   let (elabbedHeader, headerEnv, headerFnEnv) ← elabHeader header
   let sourceFnEnv ← seedMainFn headerFnEnv
   let elabbedSourceParsed ← elabSourceWithHeaderEnv headerEnv sourceFnEnv source
-  C0VC.ElabbedAst.Trans.convertProgram (elabbedHeader ++ elabbedSourceParsed)
+  C0VC.ElabbedAst.Trans.run (elabbedHeader ++ elabbedSourceParsed)
 
 end C0VC.Elab

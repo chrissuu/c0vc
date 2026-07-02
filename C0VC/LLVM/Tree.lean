@@ -1,9 +1,8 @@
 /-
 Tree Representation
 
-See C0 reference manual here: https://c0.cs.cmu.edu/docs/c0-reference.pdf
-
-Author: Chris Su <chrjs@cmu.edu>
+Author(s):
+  ~ Chris Su <chrjs@cmu.edu>
 -/
 import C0VC.Utils.Temp
 import C0VC.Utils.Label

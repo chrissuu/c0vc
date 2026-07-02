@@ -1,8 +1,6 @@
 /-
 DCE (Dead Code Elimination)
 
-See C0 reference manual here: https://c0.cs.cmu.edu/docs/c0-reference.pdf
-
 Using initialized variables after control flow removes it from context is valid
 via the typechecker but not valid by downstream passes. By implementing a
 DCE pass right after typechecking and using this AST to lower to Tree,
@@ -11,7 +9,8 @@ we allow for downstream passes to not panic.
 This means that if you care about program to look roughly 1-1 between C0/C1 and Boole,
 the lowering should happen on the AST before elaboration and not on this DCE AST.
 
-Author: Chris Su <chrjs@cmu.edu>
+Author(s):
+  ~ Chris Su <chrjs@cmu.edu>
 -/
 
 import C0VC.Ast.TypedAst
