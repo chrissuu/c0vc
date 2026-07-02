@@ -165,17 +165,12 @@ def dedupStrings : List String → List String :=
 def externalDecls (program : IR.Program) : String :=
   String.intercalate "\n" (dedupStrings ((program.filter (fun fdefn => fdefn.external)).map emitExternalDecl))
 
-<<<<<<< HEAD
-def emit (program : IR.Program) (fileName : String): IO Unit :=
+def run (program : IR.Program) (fileName : String): IO Unit :=
   let rawProgram := "\n\n".intercalate ((program.filter (fun fdefn => not fdefn.external)).map emitFdefn)
   let structDecls :=
     program.foldl (fun acc fdefn => acc ++ fdefn.structs.map emitStructDecl) []
     |> dedupStrings
     |> String.intercalate "\n"
-=======
-def run (program : IR.Program) (fileName : String): IO Unit :=
-  let rawProgram := "\n\n".intercalate ((program.filter (fun fdefn => not fdefn.external)).map (emitFdefn program))
->>>>>>> 50a890d (chore: dir organization, module name normalization)
   let decls := [runtimeDecls, externalDecls program].filter (fun s => not s.isEmpty)
   let sections := [structDecls, String.intercalate "\n" decls, rawProgram].filter (fun s => not s.isEmpty)
   IO.FS.writeFile fileName (String.intercalate "\n\n" sections)

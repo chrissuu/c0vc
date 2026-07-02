@@ -271,14 +271,9 @@ partial def translateExpr (cfg : Config) (senv : SEnv) (expr : Tree.Expr) (tc : 
     | none => panic! s!"[Error] saw a var ({var.name}) used before being defined"
 
   | .binop op tau lhs rhs =>
-<<<<<<< HEAD
     -- let tau : IR.Tau := if isCmpOp op then .i1 else .i32
     let (stmsLhs, transLhs, _, tc', tenv') := translateExpr cfg senv lhs tc fenv tenv
     let (stmsRhs, transRhs, _, tc'', tenv'') := translateExpr cfg senv rhs tc' fenv tenv'
-=======
-    let (stmsLhs, transLhs, _, tc', tenv') := translateExpr lhs tc fenv tenv
-    let (stmsRhs, transRhs, _, tc'', tenv'') := translateExpr rhs tc' fenv tenv'
->>>>>>> 50a890d (chore: dir organization, module name normalization)
     let (temp, tc''') := Temp.bumpAndCreate tc''
     ( stmsLhs ++ stmsRhs ++ [ .assign (.var temp) (.binop (translateBinOp op) (translateTau tau) transLhs transRhs) ]
     , .var temp
@@ -660,11 +655,7 @@ def fillVoidReturns (stms : List IR.Stm) : List IR.Stm :=
       s2 :: fillVoidReturns ss
     | _ => s1::fillVoidReturns (s2::ss)
 
-<<<<<<< HEAD
-def translateWithConfig (cfg : Config) (program : Tree.Program) : IR.Program :=
-=======
-def run (program : Tree.Program) : IR.Program :=
->>>>>>> 50a890d (chore: dir organization, module name normalization)
+def runWithConfig (cfg : Config) (program : Tree.Program) : IR.Program :=
   let fenvInit := mkFenv program
 
   List.foldl
@@ -677,7 +668,7 @@ def run (program : Tree.Program) : IR.Program :=
   []
   program
 
-def translate (program : Tree.Program) : IR.Program :=
-  translateWithConfig {} program
+def run (program : Tree.Program) : IR.Program :=
+  runWithConfig {} program
 
 end C0VC.LLVM.Codegen
