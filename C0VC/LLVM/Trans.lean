@@ -483,6 +483,17 @@ def translateParam (param : C0VC.TypedAst.Param) : Tree.Arg :=
   -- TODO: make this cleaner. why are we creating temp from name? seems dangerous
   (translateTau tau, Temp.fromName name)
 
+def endsWithRet : List Tree.Command → Bool
+  | [] => false
+  | cmds =>
+      match cmds.getLast! with
+      | .ret _ => true
+      | _ => false
+
+def isVoidTau : C0VC.TypedAst.Tau → Bool
+  | .void => true
+  | _ => false
+
 def translateFunctionDef (fdefn : C0VC.TypedAst.FunctionDef) : Tree.FunctionDef :=
   let senv := collectSEnv fdefn.structs
   let structs := fdefn.structs.map (fun (name, fields) => (name, fields.map (fun (tau, fieldName) => (translateTau tau, fieldName))))
@@ -505,13 +516,19 @@ def translateFunctionDef (fdefn : C0VC.TypedAst.FunctionDef) : Tree.FunctionDef 
     paramsTemps
 
   let (cmdsPre, preEnv, preTc, preLc) := translatePreconditions senv fdefn.annotations seededEnv tc 0
-  let (cmds, _, _, _) := (List.foldl
+  let (cmds, env', tc', lc') := (List.foldl
     (λ (cmdsAcc, envAcc, tcAcc, lcAcc) mstm =>
       let (cmds, env', tc', lc') := translateStm senv fdefn.annotations mstm envAcc tcAcc lcAcc
       (cmdsAcc ++ cmds, env', tc', lc')
     )
     (cmdsPre, preEnv, preTc, preLc)
     fdefn.body)
+  let (cmds, _, _, _) :=
+    if isVoidTau fdefn.retType && not (endsWithRet cmds) then
+      let (cmdsPost, env'', tc'', lc'') := translatePostconditions senv fdefn.annotations env' tc' lc'
+      (cmds ++ cmdsPost, env'', tc'', lc'')
+    else
+      (cmds, env', tc', lc')
   { fname := fdefn.fname
   , tau := translateTau fdefn.retType
   , args := params'
