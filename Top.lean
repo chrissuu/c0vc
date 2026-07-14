@@ -156,7 +156,8 @@ private def runFrontend (cfg : CliConfig) (infile : String) :
                       if cfg.typecheckOnly then
                         pure (.ok none)
                       else
-                        let dceProgram := C0VC.Dce.run typedAst
+                        let loweredAst := C0VC.LowerAnnotations.run typedAst
+                        let dceProgram := C0VC.Dce.run loweredAst
                         if cfg.dumpDce then
                           IO.println (C0VC.TypedAst.Print.ppProgram dceProgram)
                         if cfg.dumpDceRaw then

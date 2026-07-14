@@ -134,6 +134,8 @@ def isCharLitSeed c := c == '\''
 
 def isCommentSeed c := c == '/'
 
+def isContractBuiltinSeed c := c == '\\'
+
 def isSeed c :=
   isHexLitSeed c
   || isIntLitSeed c
@@ -141,6 +143,7 @@ def isSeed c :=
   || isStringLitSeed c
   || isCharLitSeed c
   || isCommentSeed c
+  || isContractBuiltinSeed c
 
 def isHexDigit (c : Char) : Bool :=
   Char.isDigit c
@@ -238,7 +241,9 @@ partial def nestedBlockCommentLength : List Char → Nat → Nat → Option Nat
 /-- Matches comments:
 `// ...` until first `\n`, and nested `/* ... */` block comments. -/
 def matchComment (s : String.Slice) (_ : Nat) : Option String.Slice :=
-  if s.startsWith "//" then
+  if s.startsWith "//@" || s.startsWith "/*@" then
+    none
+  else if s.startsWith "//" then
     let body := s.drop 2
     let commentBody := body.takeWhile (fun c => c != '\n')
     let consumed := 2 + commentBody.toString.length
@@ -254,6 +259,7 @@ def matchComment (s : String.Slice) (_ : Nat) : Option String.Slice :=
 def staticTokenLexemes : List String :=
   [
     "/*@", "//@", "@*/",
+    "\\result", "\\length",
     "<<=", ">>=",
     "+=", "-=", "*=", "/=", "%=", "&=", "^=", "|=",
     "<=", ">=", "==", "!=", "&&", "||", "<<", ">>", "++", "--", "->",
