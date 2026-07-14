@@ -460,7 +460,9 @@ partial def translateStm
     , tc'
     , lc')
 
-  | .error _ => panic! "[Error] unimplemented (error)"
+  | .error e =>
+    let (cmds, _, env', tc', lc') := translateExpr senv e env tc lc
+    (cmds ++ [.runtimeCall .error []], env', tc', lc')
 
   | .annotation a =>
     let (cmds, transTest, env', tc', lc') :=

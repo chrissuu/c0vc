@@ -27,6 +27,10 @@ void __c0vc_arith_error(const char *msg) {
   exit(1);
 }
 
+void __c0vc_error(void) {
+  __c0vc_abort("error statement executed");
+}
+
 int __c0vc_checked_div(int lhs, int rhs) {
   if (rhs == 0) {
     __c0vc_arith_error("division by zero");
