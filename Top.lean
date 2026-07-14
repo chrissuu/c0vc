@@ -199,6 +199,13 @@ def main (args : List String) : IO UInt32 := do
             C0VC.LLVM.EmitLlvm.run llvmIR (outputPath infile ".ll")
         | .exe =>
             let exe := outputPath infile ".exe"
-            IO.FS.writeFile exe "#!/bin/sh\necho 0\n"
-            let _ ← IO.Process.output { cmd := "chmod", args := #["+x", exe] }
+            let ll := outputPath infile ".ll"
+            C0VC.LLVM.EmitLlvm.run llvmIR ll
+            let out ← IO.Process.output {
+              cmd := "clang-15",
+              args := #[ll, "rt/c0vc.c", "-o", exe]
+            }
+            if out.exitCode != 0 then
+              IO.eprintln out.stderr
+              return 1
         return 0
