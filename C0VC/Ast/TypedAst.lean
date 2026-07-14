@@ -75,7 +75,7 @@ structure FunctionDef where
   fname : String
   params : List Param
   body : List Stm
-  annotations : List Stm
+  annotations : List Anno
   structs : List (String × List Field) := []
   external : Bool := false
 
@@ -194,8 +194,8 @@ def ppParams (params : List Param) : String :=
   let paramsStr := String.intercalate ", " (params.map ppParam)
   s!"({paramsStr})"
 
-def ppAnnos (annos : List Stm) : String :=
-  let annosStr := String.intercalate ", " (annos.map ppStm)
+def ppAnnos (annos : List Anno) : String :=
+  let annosStr := String.intercalate ", " (annos.map ppAnno)
   s!"[{annosStr}]"
 
 def ppFunctionDef (fdefn : FunctionDef) : String :=
@@ -285,7 +285,7 @@ partial def ppStmRaw (indentLevel : Nat) : Stm → String
 
 def ppFunctionDefRaw (fdefn : FunctionDef) : String :=
   let paramsStr := String.intercalate ", " (fdefn.params.map ppParam)
-  let annotationsStr := String.intercalate ",\n" (fdefn.annotations.map (ppStmRaw 2))
+  let annotationsStr := String.intercalate ",\n" (fdefn.annotations.map (ppAnnoRaw 2))
   let bodyStr := String.intercalate ",\n" (fdefn.body.map (ppStmRaw 2))
   s!"FunctionDef({ppTau fdefn.retType}, {fdefn.fname}, external={fdefn.external}, ({paramsStr}), [\n{annotationsStr}\n  ], [\n{bodyStr}\n  ])"
 

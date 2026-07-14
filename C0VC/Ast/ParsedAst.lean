@@ -154,8 +154,8 @@ abbrev Param := Tau × String
 abbrev Field := Tau × String
 
 inductive GDecl where
-  | fdecl (retType : Tau) (fname : String) (params : List Param) (annotations : List MarkedStm)
-  | fdefn (retType : Tau) (fname : String) (params : List Param) (body : List MarkedStm) (annotations : List MarkedStm)
+  | fdecl (retType : Tau) (fname : String) (params : List Param) (annotations : List MarkedAnno)
+  | fdefn (retType : Tau) (fname : String) (params : List Param) (body : List MarkedStm) (annotations : List MarkedAnno)
   | typedef (type : Tau) (alias : String)
   | sdecl (name : String)
   | sdefn (name : String) (fields : List Field)
@@ -349,8 +349,8 @@ def ppParams (params : List Param) : String :=
 def ppFields (fields : List Field) : String :=
   String.intercalate "\n" (fields.map fun field => indent (ppField field))
 
-def ppAnnos (annos : List MarkedStm) : String :=
-  let annosStr := String.intercalate ", " (annos.map ppMarkedStm)
+def ppAnnos (annos : List MarkedAnno) : String :=
+  let annosStr := String.intercalate ", " (annos.map ppMarkedAnno)
   s!"[{annosStr}]"
 
 def ppGDecl : GDecl → String
@@ -422,9 +422,9 @@ def ppGDeclRaw : GDecl → String
   | .sdefn name fields =>
       s!"StructDefn({name}, [{String.intercalate ", " (fields.map ppParam)}])"
   | .fdecl ret id params annotations =>
-      s!"Fdecl({ppTau ret}, {id}, [{String.intercalate ", " (params.map ppParam)}], [{String.intercalate ", " (annotations.map ppMarkedStm)}])"
+      s!"Fdecl({ppTau ret}, {id}, [{String.intercalate ", " (params.map ppParam)}], [{String.intercalate ", " (annotations.map ppMarkedAnno)}])"
   | .fdefn ret id params stms annotations =>
-      s!"Fdefn({ppTau ret}, {id}, [{String.intercalate ", " (params.map ppParam)}], [\n{ppStmsRaw stms}\n], [{String.intercalate ", " (annotations.map ppMarkedStm)}])"
+      s!"Fdefn({ppTau ret}, {id}, [{String.intercalate ", " (params.map ppParam)}], [\n{ppStmsRaw stms}\n], [{String.intercalate ", " (annotations.map ppMarkedAnno)}])"
 
 def ppProgramRaw (program : Program) : String :=
   s!"Program:\n{String.intercalate "\n" (program.map ppGDeclRaw)}"

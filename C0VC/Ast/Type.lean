@@ -748,9 +748,8 @@ def tcFunctionDef (structs : List (String × List Field)) (senv : SEnv) (fenv : 
       let (tmstm, venv') ← tcMStm senv fenv fdefn.retType mstm venv
       .ok (tmstm :: acc, venv'))
     ([], venv)
-  let tannotations ← fdefn.annotations.mapM (fun mstm => do
-    let (tmstm, _) ← tcMStm senv fenv fdefn.retType mstm venv
-    .ok tmstm)
+  let tannotations ← fdefn.annotations.mapM (fun anno =>
+    tcAnno senv fenv (some fdefn.retType) anno venv)
   let tbody := tbodyRev.reverse
   let _ ← tcReturnedValuesHaveType fdefn.retType tbody
   if typedBodyGuaranteedReturn tbody || tauEq fdefn.retType .void then

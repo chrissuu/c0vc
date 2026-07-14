@@ -137,7 +137,7 @@ structure FunctionDef where
   fname : String
   params : List Param
   body : List MarkedStm
-  annotations : List MarkedStm
+  annotations : List MarkedAnno
 
 inductive GDecl where
   | fdecl (retType : Tau) (fname : String) (params : List Param) (external : Bool)
@@ -314,8 +314,8 @@ def ppParams (params : List Param) : String :=
 def ppFields (fields : List Field) : String :=
   String.intercalate "\n" (fields.map fun field => indent (ppField field))
 
-def ppAnnos (annos : List MarkedStm) : String :=
-  let annosStr := String.intercalate ", " (annos.map ppMarkedStm)
+def ppAnnos (annos : List MarkedAnno) : String :=
+  let annosStr := String.intercalate ", " (annos.map ppMarkedAnno)
   s!"[{annosStr}]"
 
 def ppFunctionDef (fdefn : FunctionDef) : String :=
@@ -421,7 +421,7 @@ end
 
 def ppFunctionDefRaw (fdefn : FunctionDef) : String :=
   let paramsStr := String.intercalate ", " (fdefn.params.map ppParam)
-  let annotationsStr := String.intercalate ",\n" (fdefn.annotations.map (ppMarkedStmRaw 2))
+  let annotationsStr := String.intercalate ",\n" (fdefn.annotations.map (fun anno => ppAnnoRaw 2 anno.node))
   let bodyStr := String.intercalate ",\n" (fdefn.body.map (ppMarkedStmRaw 2))
   s!"FunctionDef({ppTau fdefn.retType}, {fdefn.fname}, ({paramsStr}), [\n{annotationsStr}\n  ], [\n{bodyStr}\n  ])"
 

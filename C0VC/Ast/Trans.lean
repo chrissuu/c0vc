@@ -221,7 +221,7 @@ def convertGDecl : C0VC.Ast.GDecl → Except String C0VC.ElabbedAst.GDecl
       let retType' ← convertTau retType
       let params' ← params.mapM convertParam
       let body' ← body.mapM convertMStm
-      let annotations' ← annotations.mapM convertMStm
+      let annotations' ← annotations.mapM convertMAnno
       .ok (.fdefn {
         retType := retType',
         fname,
