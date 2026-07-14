@@ -389,10 +389,14 @@ partial def tcExpr (senv : SEnv) (fenv : FEnv) (resultType : Option Tau) (mexpr 
         .ok (mkTExpr (.call fname targs) info.retType)
 
   | .length arrayLike =>
-    let tarrayLike ← tcExpr senv fenv resultType arrayLike venv
-    match tarrayLike.tau with
-    | .array _ => .ok (mkTExpr (.length tarrayLike) .int)
-    | _ => .error "\\length argument must have array type"
+    match resultType with
+    | none =>
+        .error "\\length can only be used in contracts"
+    | some _ =>
+        let tarrayLike ← tcExpr senv fenv resultType arrayLike venv
+        match tarrayLike.tau with
+        | .array _ => .ok (mkTExpr (.length tarrayLike) .int)
+        | _ => .error "\\length argument must have array type"
   | .result =>
     match resultType with
     | some tau => .ok (mkTExpr .result tau)
