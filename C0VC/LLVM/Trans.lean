@@ -190,8 +190,12 @@ partial def translateExpr
       let (tempRes, tc'') := Temp.bumpAndCreate tc'
       (argCmds ++ [.move tempRes (.call fname argExps)], .temp tempRes, env', tc'', lc')
 
+  | .length arrayLike =>
+      let (cmdsArrayLike, transArrayLike, env', tc', lc') := translateExpr senv arrayLike env tc lc
+      let (tempRes, tc'') := Temp.bumpAndCreate tc'
+      (cmdsArrayLike ++ [.move tempRes (.runtimeCall .arrayLength [transArrayLike])], .temp tempRes, env', tc'', lc')
+
   -- TODO
-  | .length _ => ([], .const .int 0, env, tc, lc)
   | .result =>
     match env.get? resultTempName with
     | some temp => ([], .temp temp, env, tc, lc)
