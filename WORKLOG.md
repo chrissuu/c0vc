@@ -9,6 +9,8 @@ GENERAL GOALS::
 6. One of the end goals may be: prove the translations hold! I.e., obligations/annotations proven to be true in Boole => these hold also in C0
     -  this means we can do pretty interesting things, no? We can make proving obligations easier by having our elaboration stage elaborate away unrelated proof material, which makes it easier for statements to be shown true/false in Boole, and the translation correctness theorem gives you Boole Correctness => Elaborated C0 correctness => C0 correctness for free
 
+7/13: Contracts
+    - TODO: implement a flag for the compiler which will do dynamic contracts. 
 
 6/4: Memory 
     - AST:
