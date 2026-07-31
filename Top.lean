@@ -12,6 +12,7 @@ import C0VC
 inductive EmitTarget where
   | exe
   | llvm
+  | boole
 deriving Repr, BEq
 
 structure CliConfig where
@@ -49,6 +50,7 @@ private def parseEmit (s : String) : EmitTarget :=
   match s with
   | "exe" => .exe
   | "llvm" => .llvm
+  | "boole" => .boole
   | _ => .llvm
 
 private def outputPath (infile : String) (ext : String) : String :=
@@ -121,8 +123,12 @@ private def parseArgs : List String → CliConfig → Except String CliConfig
         | none => parseArgs rest { cfg with infile := some arg }
         | some _ => .error s!"multiple input files provided: {arg}"
 
+private inductive FrontendOutput where
+  | llvm (program : C0VC.LLVM.IR.Program)
+  | boole (program : String)
+
 private def runFrontend (cfg : CliConfig) (infile : String) :
-    IO (Except String (Option C0VC.LLVM.IR.Program)) := do
+    IO (Except String (Option FrontendOutput)) := do
   let headersResult ← parseProgramFiles cfg.libs
   match headersResult with
   | .error err => pure (.error err)
@@ -156,21 +162,30 @@ private def runFrontend (cfg : CliConfig) (infile : String) :
                       if cfg.typecheckOnly then
                         pure (.ok none)
                       else
-                        let loweredAst := C0VC.LowerAnnotations.run typedAst
-                        let dceProgram := C0VC.Dce.run loweredAst
+                        let dceProgram :=
+                          match cfg.emit with
+                          | .boole => C0VC.Dce.run typedAst
+                          | .llvm | .exe =>
+                              C0VC.Dce.run (C0VC.LowerAnnotations.run typedAst)
                         if cfg.dumpDce then
                           IO.println (C0VC.TypedAst.Print.ppProgram dceProgram)
                         if cfg.dumpDceRaw then
                           IO.println (C0VC.TypedAst.Print.ppProgramRaw dceProgram)
-                        let treeProgram := C0VC.LLVM.Tree.Trans.run dceProgram
-                        if cfg.dumpTree then
-                          IO.println (C0VC.LLVM.Tree.Print.ppProgram treeProgram)
-                        if cfg.dumpTreeRaw then
-                          IO.println (C0VC.LLVM.Tree.Print.ppProgramRaw treeProgram)
-                        let llvmIR := C0VC.LLVM.Codegen.runWithConfig { safetyChecks := not cfg.unsafeMode } treeProgram
-                        if cfg.dumpIrRaw then
-                          IO.println (C0VC.LLVM.IR.Print.ppProgramRaw llvmIR)
-                        pure (.ok (some llvmIR))
+                        match cfg.emit with
+                        | .boole =>
+                            match C0VC.StrataBoole.Trans.run dceProgram with
+                            | .ok booleIR => pure (.ok (some (.boole (C0VC.StrataBoole.Codegen.run booleIR))))
+                            | .error err => pure (.error err)
+                        | .llvm | .exe =>
+                            let treeProgram := C0VC.LLVM.Tree.Trans.run dceProgram
+                            if cfg.dumpTree then
+                              IO.println (C0VC.LLVM.Tree.Print.ppProgram treeProgram)
+                            if cfg.dumpTreeRaw then
+                              IO.println (C0VC.LLVM.Tree.Print.ppProgramRaw treeProgram)
+                            let llvmIR := C0VC.LLVM.Codegen.runWithConfig { safetyChecks := not cfg.unsafeMode } treeProgram
+                            if cfg.dumpIrRaw then
+                              IO.println (C0VC.LLVM.IR.Print.ppProgramRaw llvmIR)
+                            pure (.ok (some (.llvm llvmIR)))
 
 def main (args : List String) : IO UInt32 := do
   let cfgE := parseArgs args {}
@@ -193,11 +208,18 @@ def main (args : List String) : IO UInt32 := do
       return 1
   | .ok none =>
       return 0
-  | .ok (some llvmIR) =>
+  | .ok (some output) =>
         match cfg.emit with
         | .llvm =>
-            C0VC.LLVM.EmitLlvm.run llvmIR (outputPath infile ".ll")
+            match output with
+            | .llvm llvmIR => C0VC.LLVM.EmitLlvm.run llvmIR (outputPath infile ".ll")
+            | .boole _ => IO.eprintln "internal error: expected LLVM output"; return 1
         | .exe =>
+            let llvmIR ← match output with
+              | .llvm llvmIR => pure llvmIR
+              | .boole _ =>
+                  IO.eprintln "internal error: expected LLVM output"
+                  return 1
             let exe := outputPath infile ".exe"
             let ll := outputPath infile ".ll"
             C0VC.LLVM.EmitLlvm.run llvmIR ll
@@ -208,4 +230,11 @@ def main (args : List String) : IO UInt32 := do
             if out.exitCode != 0 then
               IO.eprintln out.stderr
               return 1
+        | .boole =>
+            match output with
+            | .boole boole =>
+                IO.FS.writeFile (outputPath infile ".boole.st") boole
+            | .llvm _ =>
+                IO.eprintln "internal error: expected Boole output"
+                return 1
         return 0

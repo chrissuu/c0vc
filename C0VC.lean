@@ -13,3 +13,6 @@ import C0VC.Ast.LowerAnnotations
 import C0VC.Ast.Dce
 
 import C0VC.LLVM
+import C0VC.StrataBoole.IR
+import C0VC.StrataBoole.Trans
+import C0VC.StrataBoole.Codegen
