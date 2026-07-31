@@ -6,6 +6,12 @@
 
 #define C0VC_ARRAY_HEADER_SIZE ((int)sizeof(int64_t))
 
+extern int _c0_main(void);
+
+int main(void) {
+  return _c0_main();
+}
+
 void __c0vc_abort(const char *msg) {
   fprintf(stderr, "%s\n", msg);
   fflush(stderr);
@@ -25,6 +31,16 @@ void __c0vc_arith_error(const char *msg) {
   fflush(stderr);
   raise(SIGFPE);
   exit(1);
+}
+
+void __c0vc_error(void) {
+  __c0vc_abort("error statement executed");
+}
+
+void _c0_assert(int cond) {
+  if (!cond) {
+    __c0vc_abort("assertion failed");
+  }
 }
 
 int __c0vc_checked_div(int lhs, int rhs) {

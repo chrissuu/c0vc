@@ -439,10 +439,10 @@ end
 
 def collectCallsGDecl : GDecl → Std.HashSet String
   | .fdecl _ _ _ annotations =>
-      annotations.foldl (fun calls anno => (collectCallsMStm anno).fold (fun acc fname => acc.insert fname) calls) {}
+      annotations.foldl (fun calls anno => (collectCallsMAnno anno).fold (fun acc fname => acc.insert fname) calls) {}
   | .fdefn _ _ _ body annotations =>
       let calls := body.foldl (fun calls stm => (collectCallsMStm stm).fold (fun acc fname => acc.insert fname) calls) {}
-      annotations.foldl (fun calls anno => (collectCallsMStm anno).fold (fun acc fname => acc.insert fname) calls) calls
+      annotations.foldl (fun calls anno => (collectCallsMAnno anno).fold (fun acc fname => acc.insert fname) calls) calls
   | .typedef .. => {}
   | .sdecl .. | .sdefn .. => {}
 
@@ -529,6 +529,10 @@ def elabMStms (env : Env) (tc : TempCounter) (stms : List MarkedStm) :
     (tc, [])
   .ok (tc', stmsRev.reverse)
 
+def elabMAnnos (env : Env) (annos : List MarkedAnno) :
+    Except String (List MarkedAnno) :=
+  annos.mapM (elabMAnno env)
+
 def elabGDecl (gdecl : GDecl) (env : Env) : Except String (GDecl × Env) := do
   match gdecl with
   | .fdefn retType fname params body annotations =>
@@ -538,8 +542,8 @@ def elabGDecl (gdecl : GDecl) (env : Env) : Except String (GDecl × Env) := do
     let _ ← checkParamTypesNotVoid params
     let retType' ← elabTypeName env retType
     let params' ← elabParams params env
-    let (tc', body') ← elabMStms env 0 body
-    let (_, annotations') ← elabMStms env tc' annotations
+    let (_, body') ← elabMStms env 0 body
+    let annotations' ← elabMAnnos env annotations
     .ok
       ( .fdefn retType' fname params' body' annotations'
       , env
@@ -551,7 +555,7 @@ def elabGDecl (gdecl : GDecl) (env : Env) : Except String (GDecl × Env) := do
     let _ ← checkParamTypesNotVoid params
     let retType' ← elabTypeName env retType
     let params' ← elabParams params env
-    let (_, annotations') ← elabMStms env 0 annotations
+    let annotations' ← elabMAnnos env annotations
     .ok
       ( .fdecl retType' fname params' annotations'
       , env

@@ -8,6 +8,7 @@ inductive Fn where
   | checkedShl
   | checkedShr
   | assert
+  | error
   | alloc
   | allocArray
   | checkPtr
@@ -21,6 +22,7 @@ def name : Fn → String
   | .checkedShl => "__c0vc_checked_shl"
   | .checkedShr => "__c0vc_checked_shr"
   | .assert => "_c0_assert"
+  | .error => "__c0vc_error"
   | .alloc => "__c0vc_alloc"
   | .allocArray => "__c0vc_alloc_array"
   | .checkPtr => "__c0vc_check_ptr"
@@ -32,7 +34,8 @@ def retTau : Fn → IR.Tau
   | .checkedMod
   | .checkedShl
   | .checkedShr => .i32
-  | .assert => .void
+  | .assert
+  | .error => .void
   | .alloc
   | .allocArray => .ptr
   | .checkPtr
@@ -45,6 +48,7 @@ def argsTau : Fn → List IR.Tau
   | .checkedShl
   | .checkedShr => [.i32, .i32]
   | .assert => [.i1]
+  | .error => []
   | .alloc => [.i32]
   | .allocArray => [.i32, .i32]
   | .checkPtr => [.ptr]
@@ -57,6 +61,7 @@ def all : List Fn :=
   , .checkedShl
   , .checkedShr
   , .assert
+  , .error
   , .alloc
   , .allocArray
   , .checkPtr

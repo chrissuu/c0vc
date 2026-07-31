@@ -9,6 +9,7 @@ import C0VC.Ast.TypedAst
 import C0VC.Ast.Trans
 import C0VC.Ast.Elab
 import C0VC.Ast.Type
+import C0VC.Ast.LowerAnnotations
 import C0VC.Ast.Dce
 
 import C0VC.LLVM

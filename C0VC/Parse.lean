@@ -794,7 +794,7 @@ def parseParams : P (List Param) := do
 
 def parseFdecl : P GDecl := do
   let annosRev ← Parser.foldl (fun acc anno => anno :: acc) [] parseSingleAnnotation
-  let annotations := annosRev.reverse.map (fun a => ({ node := .annotation a, span := a.span } : MarkedStm))
+  let annotations := annosRev.reverse
   let tau ← parseTau
   let fname ← parseIdent
   let _ ← expectKindTokMsg (only .lParen) "expected '(' in function declaration"
@@ -807,7 +807,7 @@ def parseFdecl : P GDecl := do
 def parseFdefn : P GDecl := do
   let annosRevOpt ← option? (Parser.foldl (fun acc anno => anno :: acc) [] parseSingleAnnotation)
   let annosRev := annosRevOpt.getD []
-  let annotations := annosRev.reverse.map (fun a => ({ node := .annotation a, span := a.span } : MarkedStm))
+  let annotations := annosRev.reverse
   let tau ← parseTau
   let fname ← parseIdent
   let _ ← expectKindTokMsg (only .lParen) "expected '(' in function definition"

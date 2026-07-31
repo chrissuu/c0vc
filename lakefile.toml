@@ -12,4 +12,9 @@ root = "Top"
 [[require]]
 name = "Parser"
 git = "https://github.com/fgdorais/lean4-parser"
+rev = "d178be0f5fa5894ca4cded66fea83edeadf6b34d"
+
+[[require]]
+name = "StrataBoole"
+git = "https://github.com/strata-org/Strata-Boole"
 rev = "main"

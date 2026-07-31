@@ -389,10 +389,14 @@ partial def tcExpr (senv : SEnv) (fenv : FEnv) (resultType : Option Tau) (mexpr 
         .ok (mkTExpr (.call fname targs) info.retType)
 
   | .length arrayLike =>
-    let tarrayLike ← tcExpr senv fenv resultType arrayLike venv
-    match tarrayLike.tau with
-    | .array _ => .ok (mkTExpr (.length tarrayLike) .int)
-    | _ => .error "\\length argument must have array type"
+    match resultType with
+    | none =>
+        .error "\\length can only be used in contracts"
+    | some _ =>
+        let tarrayLike ← tcExpr senv fenv resultType arrayLike venv
+        match tarrayLike.tau with
+        | .array _ => .ok (mkTExpr (.length tarrayLike) .int)
+        | _ => .error "\\length argument must have array type"
   | .result =>
     match resultType with
     | some tau => .ok (mkTExpr .result tau)
@@ -748,9 +752,8 @@ def tcFunctionDef (structs : List (String × List Field)) (senv : SEnv) (fenv : 
       let (tmstm, venv') ← tcMStm senv fenv fdefn.retType mstm venv
       .ok (tmstm :: acc, venv'))
     ([], venv)
-  let tannotations ← fdefn.annotations.mapM (fun mstm => do
-    let (tmstm, _) ← tcMStm senv fenv fdefn.retType mstm venv
-    .ok tmstm)
+  let tannotations ← fdefn.annotations.mapM (fun anno =>
+    tcAnno senv fenv (some fdefn.retType) anno venv)
   let tbody := tbodyRev.reverse
   let _ ← tcReturnedValuesHaveType fdefn.retType tbody
   if typedBodyGuaranteedReturn tbody || tauEq fdefn.retType .void then
