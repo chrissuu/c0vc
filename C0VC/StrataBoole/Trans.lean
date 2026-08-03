@@ -10,8 +10,8 @@ structure Config where
   resultName : String := "__result"
   fieldLayout : Struct.FieldIndexMap := {}
 
-private def fieldIndexExpr (cfg : Config) (root : String) (fields : List String) : Except String Expr := do
-  .ok (.intLit (← Struct.lookupFieldIndex cfg.fieldLayout root fields))
+private def fieldInfo (cfg : Config) (root : String) (fields : List String) : Except String Struct.FieldInfo :=
+  Struct.lookupFieldInfo cfg.fieldLayout root fields
 
 private def structNameOfTau : C0VC.TypedAst.Tau → Option String
   | .struct name => some name
@@ -20,6 +20,23 @@ private def structNameOfTau : C0VC.TypedAst.Tau → Option String
 private def ptrStructNameOfTau : C0VC.TypedAst.Tau → Option String
   | .ptr (.struct name) => some name
   | _ => none
+
+private def isStructTau : C0VC.TypedAst.Tau → Bool
+  | .struct _ => true
+  | _ => false
+
+private def heapNameOfTau : C0VC.TypedAst.Tau → Except String String
+  | .int | .char => .ok "hInt"
+  | .bool => .ok "hBool"
+  | .ptr _ | .array _ | .null | .struct _ => .ok "hRef"
+  | .void => .error "void values do not have a Boole heap"
+  | .string => .error "StrataBoole backend does not support string heap values yet"
+
+private def heapAt (heapName : String) (ref index : Expr) : Expr :=
+  .mapGet (.mapGet (.var heapName) ref) index
+
+private def heapSlot (heapName : String) (ref index : Expr) : LValue :=
+  .mapSlot (.mapGet (.var heapName) ref) index
 
 partial def transTau : C0VC.TypedAst.Tau → Except String Tau
   | .int | .char => .ok .int
@@ -46,9 +63,6 @@ private def transBinOp : C0VC.TypedAst.BinOp → BinOp
   | .shl => .shl
   | .shr => .shr
 
-private def heapAt (ref index : Expr) : Expr :=
-  .mapGet (.mapGet (.var "hRef") ref) index
-
 mutual
 partial def transExpr (cfg : Config) (e : C0VC.TypedAst.TypedExpr) : Except String Expr := do
   match e.node with
@@ -68,30 +82,44 @@ partial def transExpr (cfg : Config) (e : C0VC.TypedAst.TypedExpr) : Except Stri
   | .length arrayLike => .ok (.mapGet (.var "len") (← transExpr cfg arrayLike))
   | .alloc _ | .allocArray .. =>
       .error "StrataBoole backend does not lower allocation yet; heap allocation needs the logical heap pass"
-  | .deref ptr => .ok (heapAt (← transExpr cfg ptr) (.intLit 0))
-  | .arrAccess arr index => .ok (heapAt (← transExpr cfg arr) (← transExpr cfg index))
+  | .deref ptr => .ok (heapAt (← heapNameOfTau e.tau) (← transExpr cfg ptr) (.intLit 0))
+  | .arrAccess arr index =>
+      if isStructTau e.tau then
+        .error "StrataBoole backend does not lower array-of-struct values yet"
+      else
+        .ok (heapAt (← heapNameOfTau e.tau) (← transExpr cfg arr) (← transExpr cfg index))
   | .dot struct field => do
       let (base, root, path) ← transStructExprRefAndPath cfg struct
-      .ok (heapAt base (← fieldIndexExpr cfg root (path ++ [field])))
+      let path := path ++ [field]
+      let info ← fieldInfo cfg root path
+      .ok (heapAt (← heapNameOfTau info.tau) base (.intLit info.index))
   | .arrow structPtr field => do
       let root ← match ptrStructNameOfTau structPtr.tau with
         | some root => .ok root
         | none => .error "arrow access expected pointer-to-struct type"
-      .ok (heapAt (← transExpr cfg structPtr) (← fieldIndexExpr cfg root [field]))
+      let info ← fieldInfo cfg root [field]
+      .ok (heapAt (← heapNameOfTau info.tau) (← transExpr cfg structPtr) (.intLit info.index))
 
 partial def transLValue (cfg : Config) (lv : C0VC.TypedAst.TypedLValue) : Except String LValue := do
   match lv.node with
   | .var name => .ok (.var name)
-  | .deref ptr => .ok (.mapSlot (.mapGet (.var "hRef") (← transLValueAsExpr cfg ptr)) (.intLit 0))
-  | .arrAccess arr index => .ok (.mapSlot (.mapGet (.var "hRef") (← transLValueAsExpr cfg arr)) (← transExpr cfg index))
+  | .deref ptr => .ok (heapSlot (← heapNameOfTau lv.tau) (← transLValueAsExpr cfg ptr) (.intLit 0))
+  | .arrAccess arr index =>
+      if isStructTau lv.tau then
+        .error "StrataBoole backend does not lower array-of-struct lvalues yet"
+      else
+        .ok (heapSlot (← heapNameOfTau lv.tau) (← transLValueAsExpr cfg arr) (← transExpr cfg index))
   | .dot struct field => do
       let (base, root, path) ← transStructLValueRefAndPath cfg struct
-      .ok (.mapSlot (.mapGet (.var "hRef") base) (← fieldIndexExpr cfg root (path ++ [field])))
+      let path := path ++ [field]
+      let info ← fieldInfo cfg root path
+      .ok (heapSlot (← heapNameOfTau info.tau) base (.intLit info.index))
   | .arrow structPtr field => do
       let root ← match ptrStructNameOfTau structPtr.tau with
         | some root => .ok root
         | none => .error "arrow lvalue access expected pointer-to-struct type"
-      .ok (.mapSlot (.mapGet (.var "hRef") (← transLValueAsExpr cfg structPtr)) (← fieldIndexExpr cfg root [field]))
+      let info ← fieldInfo cfg root [field]
+      .ok (heapSlot (← heapNameOfTau info.tau) (← transLValueAsExpr cfg structPtr) (.intLit info.index))
 
 partial def transLValueAsExpr (cfg : Config) (lv : C0VC.TypedAst.TypedLValue) : Except String Expr := do
   match ← transLValue cfg lv with
@@ -111,6 +139,11 @@ partial def transStructExprRefAndPath
         | some root => .ok root
         | none => .error "arrow access expected pointer-to-struct type"
       .ok (← transExpr cfg structPtr, root, [field])
+  | .deref ptr => do
+      let root ← match structNameOfTau e.tau with
+        | some root => .ok root
+        | none => .error "struct dereference expected struct type"
+      .ok (← transExpr cfg ptr, root, [])
   | _ =>
       let root ← match structNameOfTau e.tau with
         | some root => .ok root
@@ -130,6 +163,11 @@ partial def transStructLValueRefAndPath
         | some root => .ok root
         | none => .error "arrow lvalue access expected pointer-to-struct type"
       .ok (← transLValueAsExpr cfg structPtr, root, [field])
+  | .deref ptr => do
+      let root ← match structNameOfTau lv.tau with
+        | some root => .ok root
+        | none => .error "struct dereference lvalue expected struct type"
+      .ok (← transLValueAsExpr cfg ptr, root, [])
   | _ =>
       let root ← match structNameOfTau lv.tau with
         | some root => .ok root
@@ -155,6 +193,9 @@ private def checkReturns (tail : Bool) : C0VC.TypedAst.Stm → Except String Uni
 partial def transStm (cfg : Config) : C0VC.TypedAst.Stm → Except String (List Stmt)
   | .nop => .ok []
   | .assign lhs val => do
+      if isStructTau lhs.tau || isStructTau val.tau then
+        .error "StrataBoole backend does not lower whole-struct assignment yet"
+      else
       .ok [.assign (← transLValue cfg lhs) (← transExpr cfg val)]
   | .ret none => .ok []
   | .ret (some val) => do

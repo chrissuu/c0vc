@@ -21,7 +21,12 @@ structure FieldPath where
 deriving BEq, Hashable, Repr
 
 abbrev SEnv := Std.HashMap String (List TypedAst.Field)
-abbrev FieldIndexMap := Std.HashMap FieldPath Nat
+
+structure FieldInfo where
+  index : Nat
+  tau : TypedAst.Tau
+
+abbrev FieldIndexMap := Std.HashMap FieldPath FieldInfo
 
 private def collectSEnv (structs : List TypedAst.Struct) : SEnv :=
   structs.foldl
@@ -44,7 +49,7 @@ partial def computeFields
   | (tau, fieldName) :: rest =>
       match tau with
       | .int | .char | .bool | .ptr _ | .array _ =>
-          let map' := map.insert { root, fields := path ++ [fieldName] } start
+          let map' := map.insert { root, fields := path ++ [fieldName] } { index := start, tau }
           computeFields senv root path rest map' (start + 1)
       | .struct name =>
           let nestedFields ← match senv.get? name with
@@ -68,9 +73,12 @@ def computeFieldLayout (structs : List TypedAst.Struct) : Except String FieldInd
     ({}, 0)
   .ok layout
 
-def lookupFieldIndex (layout : FieldIndexMap) (root : String) (fields : List String) : Except String Nat :=
+def lookupFieldInfo (layout : FieldIndexMap) (root : String) (fields : List String) : Except String FieldInfo :=
   match layout.get? { root, fields } with
-  | some index => .ok index
+  | some info => .ok info
   | none => .error s!"struct field {fieldPathText root fields} has no Boole heap slot"
+
+def lookupFieldIndex (layout : FieldIndexMap) (root : String) (fields : List String) : Except String Nat := do
+  .ok (← lookupFieldInfo layout root fields).index
 
 end C0VC.StrataBoole.Struct
