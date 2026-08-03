@@ -1,6 +1,8 @@
 import C0VC.Ast.TypedAst
 import Std.Data.HashMap
 
+namespace C0VC.StrataBoole.Struct
+
 /--
 StrataBoole.Struct
 
@@ -12,8 +14,6 @@ into the array-based flattened struct representation.
 Author(s):
   ~ Chris Su <chrjs@cmu.edu>
 -/
-
-namespace C0VC.StrataBoole.Struct
 
 structure FieldPath where
   root : String
