@@ -27,6 +27,11 @@ structure FieldInfo where
   tau : TypedAst.Tau
 
 abbrev FieldIndexMap := Std.HashMap FieldPath FieldInfo
+abbrev StructWidthMap := Std.HashMap String Nat
+
+structure Layout where
+  fields : FieldIndexMap
+  widths : StructWidthMap
 
 private def collectSEnv (structs : List TypedAst.Struct) : SEnv :=
   structs.foldl
@@ -64,14 +69,17 @@ partial def computeFields
       | .void =>
           .error s!"invalid void-typed field {fieldPathText root (path ++ [fieldName])}"
 
-def computeFieldLayout (structs : List TypedAst.Struct) : Except String FieldIndexMap := do
+def computeLayout (structs : List TypedAst.Struct) : Except String Layout := do
   let senv := collectSEnv structs
-  let (layout, _) ← structs.foldlM
-    (fun (acc, _) (name, fields) => do
-      let (acc', next) ← computeFields senv name [] fields acc 0
-      .ok (acc', next))
-    ({}, 0)
-  .ok layout
+  let (fields, widths) ← structs.foldlM
+    (fun (fieldAcc, widthAcc) (name, structFields) => do
+      let (fieldAcc', width) ← computeFields senv name [] structFields fieldAcc 0
+      .ok (fieldAcc', widthAcc.insert name width))
+    ({}, {})
+  .ok { fields, widths }
+
+def computeFieldLayout (structs : List TypedAst.Struct) : Except String FieldIndexMap := do
+  .ok (← computeLayout structs).fields
 
 def lookupFieldInfo (layout : FieldIndexMap) (root : String) (fields : List String) : Except String FieldInfo :=
   match layout.get? { root, fields } with
@@ -80,5 +88,10 @@ def lookupFieldInfo (layout : FieldIndexMap) (root : String) (fields : List Stri
 
 def lookupFieldIndex (layout : FieldIndexMap) (root : String) (fields : List String) : Except String Nat := do
   .ok (← lookupFieldInfo layout root fields).index
+
+def lookupStructWidth (widths : StructWidthMap) (name : String) : Except String Nat :=
+  match widths.get? name with
+  | some width => .ok width
+  | none => .error s!"struct {name} has no Boole layout width"
 
 end C0VC.StrataBoole.Struct

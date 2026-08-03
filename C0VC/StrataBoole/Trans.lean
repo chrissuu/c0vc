@@ -9,6 +9,7 @@ open C0VC.StrataBoole
 structure Config where
   resultName : String := "__result"
   fieldLayout : Struct.FieldIndexMap := {}
+  structWidths : Struct.StructWidthMap := {}
 
 private def fieldInfo (cfg : Config) (root : String) (fields : List String) : Except String Struct.FieldInfo :=
   Struct.lookupFieldInfo cfg.fieldLayout root fields
@@ -37,6 +38,50 @@ private def heapAt (heapName : String) (ref index : Expr) : Expr :=
 
 private def heapSlot (heapName : String) (ref index : Expr) : LValue :=
   .mapSlot (.mapGet (.var heapName) ref) index
+
+private def lvalueAsExpr : LValue → Expr
+  | .var name => .var name
+  | .mapSlot map key => .mapGet map key
+
+private def refAllocated (ref : Expr) : Expr :=
+  .mapGet (.var "alloc") ref
+
+private def refLengthSlot (ref : Expr) : LValue :=
+  .mapSlot (.var "len") ref
+
+private def refAllocSlot (ref : Expr) : LValue :=
+  .mapSlot (.var "alloc") ref
+
+private def nextRef : Expr :=
+  .var "nextRef"
+
+private def one : Expr :=
+  .intLit 1
+
+private def structWidth (cfg : Config) (name : String) : Except String Nat :=
+  Struct.lookupStructWidth cfg.structWidths name
+
+private def allocWidthExpr (cfg : Config) : C0VC.TypedAst.Tau → Except String Expr
+  | .struct name => do
+      .ok (.intLit (← structWidth cfg name))
+  | _ => .ok one
+
+private def arrayAllocLengthExpr (cfg : Config) (elemTau : C0VC.TypedAst.Tau) (size : Expr) : Except String Expr := do
+  match elemTau with
+  | .struct name =>
+      let width ← structWidth cfg name
+      .ok (.binop .mul size (.intLit width))
+  | _ => .ok size
+
+private def finishAllocation (lhs : LValue) (logicalLength : Expr) : List Stmt :=
+  let allocatedRef := lvalueAsExpr lhs
+  [ .assert (.binop .neq nextRef .null)
+  , .assert (.binop .eq (refAllocated nextRef) (.boolLit false))
+  , .assign lhs nextRef
+  , .assign (refAllocSlot allocatedRef) (.boolLit true)
+  , .assign (refLengthSlot allocatedRef) logicalLength
+  , .assign (.var "nextRef") (.binop .plus nextRef one)
+  ]
 
 partial def transTau : C0VC.TypedAst.Tau → Except String Tau
   | .int | .char => .ok .int
@@ -175,6 +220,17 @@ partial def transStructLValueRefAndPath
       .ok (← transLValueAsExpr cfg lv, root, [])
 end
 
+private def transAllocationTo (cfg : Config) (lhs : LValue) (val : C0VC.TypedAst.TypedExpr) : Except String (Option (List Stmt)) := do
+  match val.node with
+  | .alloc tau =>
+      .ok (some (finishAllocation lhs (← allocWidthExpr cfg tau)))
+  | .allocArray tau size => do
+      let size ← transExpr cfg size
+      let length ← arrayAllocLengthExpr cfg tau size
+      .ok (some ([.assert (.binop .lte (.intLit 0) size)] ++ finishAllocation lhs length))
+  | _ =>
+      .ok none
+
 private def checkReturns (tail : Bool) : C0VC.TypedAst.Stm → Except String Unit
   | .ret _ =>
       if tail then .ok () else .error "StrataBoole backend does not support non-tail return statements yet"
@@ -196,7 +252,10 @@ partial def transStm (cfg : Config) : C0VC.TypedAst.Stm → Except String (List 
       if isStructTau lhs.tau || isStructTau val.tau then
         .error "StrataBoole backend does not lower whole-struct assignment yet"
       else
-      .ok [.assign (← transLValue cfg lhs) (← transExpr cfg val)]
+        let lhs ← transLValue cfg lhs
+        match ← transAllocationTo cfg lhs val with
+        | some stms => .ok stms
+        | none => .ok [.assign lhs (← transExpr cfg val)]
   | .ret none => .ok []
   | .ret (some val) => do
       .ok [.assign (.var cfg.resultName) (← transExpr cfg val)]
@@ -229,7 +288,9 @@ partial def transStm (cfg : Config) : C0VC.TypedAst.Stm → Except String (List 
       let initStms ← match init with
         | none => .ok []
         | some e => do
-            .ok [.assign (.var varName) (← transExpr cfg e)]
+            match ← transAllocationTo cfg (.var varName) e with
+            | some stms => .ok stms
+            | none => .ok [.assign (.var varName) (← transExpr cfg e)]
       let bodyStms ← transStm cfg body
       .ok ([decl] ++ initStms ++ bodyStms)
 
@@ -264,8 +325,8 @@ private def transProcedure (cfg : Config) (f : C0VC.TypedAst.FunctionDef) : Exce
 
 def runWithConfig (cfg : Config) (program : C0VC.TypedAst.Program) : Except String Program := do
   let structs := program.flatMap (fun f => f.structs)
-  let fieldLayout ← Struct.computeFieldLayout structs
-  let cfg := { cfg with fieldLayout }
+  let layout ← Struct.computeLayout structs
+  let cfg := { cfg with fieldLayout := layout.fields, structWidths := layout.widths }
   .ok { procedures := ← program.mapM (transProcedure cfg) }
 
 def run (program : C0VC.TypedAst.Program) : Except String Program :=

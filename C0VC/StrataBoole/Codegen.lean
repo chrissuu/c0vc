@@ -52,6 +52,7 @@ private def booleHeapPrelude : String :=
     , "type HeapBool := Map Ref (Map int bool);"
     , "type HeapRef := Map Ref (Map int Ref);"
     , ""
+    , "var nextRef : Ref;"
     , "var alloc : Map int bool;"
     , "var len : Map int int;"
     , "var hInt : HeapInt;"
@@ -61,7 +62,7 @@ private def booleHeapPrelude : String :=
     ]
 
 private def heapGlobals : List String :=
-  [ "alloc", "len", "hInt", "hBool", "hRef" ]
+  [ "nextRef", "alloc", "len", "hInt", "hBool", "hRef" ]
 
 private def isHeapGlobal (name : String) : Bool :=
   heapGlobals.contains name
