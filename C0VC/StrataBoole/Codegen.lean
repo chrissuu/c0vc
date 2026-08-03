@@ -48,13 +48,24 @@ private def booleHeapPrelude : String :=
     [ "program Boole;"
     , ""
     , "type Ref := int;"
-    , "type HeapRef := Map int (Map int int);"
+    , "type HeapInt := Map Ref (Map int int);"
+    , "type HeapBool := Map Ref (Map int bool);"
+    , "type HeapRef := Map Ref (Map int Ref);"
     , ""
+    , "var nextRef : Ref;"
     , "var alloc : Map int bool;"
     , "var len : Map int int;"
+    , "var hInt : HeapInt;"
+    , "var hBool : HeapBool;"
     , "var hRef : HeapRef;"
     , ""
     ]
+
+private def heapGlobals : List String :=
+  [ "nextRef", "alloc", "len", "hInt", "hBool", "hRef" ]
+
+private def isHeapGlobal (name : String) : Bool :=
+  heapGlobals.contains name
 
 partial def tauNeedsHeapPrelude : Tau → Bool
   | .ref | .heapRef => true
@@ -63,7 +74,7 @@ partial def tauNeedsHeapPrelude : Tau → Bool
 
 mutual
 partial def exprNeedsHeapPrelude : Expr → Bool
-  | .var name => name == "alloc" || name == "len" || name == "hRef"
+  | .var name => isHeapGlobal name
   | .null => true
   | .intLit _ | .boolLit _ => false
   | .binop _ lhs rhs => exprNeedsHeapPrelude lhs || exprNeedsHeapPrelude rhs
@@ -73,7 +84,7 @@ partial def exprNeedsHeapPrelude : Expr → Bool
   | .mapGet map key => exprNeedsHeapPrelude map || exprNeedsHeapPrelude key
 
 partial def lvalueNeedsHeapPrelude : LValue → Bool
-  | .var name => name == "alloc" || name == "len" || name == "hRef"
+  | .var name => isHeapGlobal name
   | .mapSlot map key => exprNeedsHeapPrelude map || exprNeedsHeapPrelude key
 end
 
