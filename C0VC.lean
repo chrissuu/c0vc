@@ -14,5 +14,6 @@ import C0VC.Ast.Dce
 
 import C0VC.LLVM
 import C0VC.StrataBoole.IR
+import C0VC.StrataBoole.Struct
 import C0VC.StrataBoole.Trans
 import C0VC.StrataBoole.Codegen

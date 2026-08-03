@@ -21,6 +21,22 @@ private def commaSep (xs : List String) : String :=
 private def lines (xs : List String) : String :=
   String.intercalate "\n" xs
 
+private def booleKeywords : List String :=
+  [ "result"
+  , "old"
+  , "var"
+  , "procedure"
+  ]
+
+private def isBooleKeyword (name : String) : Bool :=
+  booleKeywords.contains name
+
+private def ppIdent (name : String) : String :=
+  if isBooleKeyword name then
+    "_c0_" ++ name
+  else
+    name
+
 private def boolePrelude : String :=
   lines
     [ "program Boole;"
@@ -110,18 +126,18 @@ private def ppBinOp : BinOp → String
 
 mutual
 partial def ppExpr : Expr → String
-  | .var name => name
+  | .var name => ppIdent name
   | .intLit val => toString val
   | .boolLit true => "true"
   | .boolLit false => "false"
   | .null => "0"
   | .binop op lhs rhs => parens s!"{ppExpr lhs} {ppBinOp op} {ppExpr rhs}"
   | .ite test thenVal elseVal => s!"(if {ppExpr test} then {ppExpr thenVal} else {ppExpr elseVal})"
-  | .call fname args => s!"{fname}({commaSep (args.map ppExpr)})"
+  | .call fname args => s!"{ppIdent fname}({commaSep (args.map ppExpr)})"
   | .mapGet map key => s!"{ppExpr map}[{ppExpr key}]"
 
 partial def ppLValue : LValue → String
-  | .var name => name
+  | .var name => ppIdent name
   | .mapSlot map key => s!"{ppExpr map}[{ppExpr key}]"
 end
 
@@ -131,7 +147,7 @@ private def ppSpec : Spec → String
 
 partial def ppStm (level : Nat) : Stmt → List String
   | .declare name tau =>
-      [indent level s!"var {name} : {ppTau tau};"]
+      [indent level s!"var {ppIdent name} : {ppTau tau};"]
   | .assign lhs rhs =>
       [indent level s!"{ppLValue lhs} := {ppExpr rhs};"]
   | .assert expr =>
@@ -153,11 +169,11 @@ partial def ppStm (level : Nat) : Stmt → List String
       [indent level s!"while ({ppExpr test}){invText} \{"] ++ bodyLines ++ [indent level "}"]
 
 private def ppParams (params : List (Tau × String)) : String :=
-  commaSep (params.map fun (tau, name) => s!"{name} : {ppTau tau}")
+  commaSep (params.map fun (tau, name) => s!"{ppIdent name} : {ppTau tau}")
 
 private def ppReturn : Option (Tau × String) → String
   | none => "returns ()"
-  | some (tau, name) => s!"returns ({name} : {ppTau tau})"
+  | some (tau, name) => s!"returns ({ppIdent name} : {ppTau tau})"
 
 private def ppProcedure (proc : Procedure) : String :=
   let specBlock :=
@@ -167,10 +183,10 @@ private def ppProcedure (proc : Procedure) : String :=
       "\nspec {\n" ++ String.intercalate "\n" (proc.specs.map ppSpec) ++ "\n}"
   match proc.body with
   | none =>
-      s!"procedure {proc.name}({ppParams proc.params}) {ppReturn proc.ret}{specBlock};"
+      s!"procedure {ppIdent proc.name}({ppParams proc.params}) {ppReturn proc.ret}{specBlock};"
   | some body =>
       let bodyText := String.intercalate "\n" (List.flatten (body.map (ppStm 1)))
-      s!"procedure {proc.name}({ppParams proc.params}) {ppReturn proc.ret}{specBlock}\n\{\n{bodyText}\n};"
+      s!"procedure {ppIdent proc.name}({ppParams proc.params}) {ppReturn proc.ret}{specBlock}\n\{\n{bodyText}\n};"
 
 def run (program : Program) : ProgramText :=
   let prelude :=
