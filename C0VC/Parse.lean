@@ -1,11 +1,6 @@
 /-
 Parser
 
-This uses a parser combinator library to parse the tokens produced by the lexer.
-Note: since memory is currently unsupported, this means that our grammar is still
-context free. However, with the introduction of pointers, our grammar will no longer
-become context free and we will need a workaround.
-
 Author(s):
   ~ Chris Su <chrjs@cmu.edu>
 -/
