@@ -9,12 +9,23 @@ GENERAL GOALS::
 6. One of the end goals may be: prove the translations hold! I.e., obligations/annotations proven to be true in Boole => these hold also in C0
     -  this means we can do pretty interesting things, no? We can make proving obligations easier by having our elaboration stage elaborate away unrelated proof material, which makes it easier for statements to be shown true/false in Boole, and the translation correctness theorem gives you Boole Correctness => Elaborated C0 correctness => C0 correctness for free
 
+8/3: Structs 
+    - Array of struct field accesses are properly lowered now, instead of having 
+      the placeholder code.
+
+    - Safe memory accesses are also lowered as assertions / proof obligations.
+
+    - Added some additional fields to the booleKeywords array so that we don't get
+      naming conflicts between StrataBoole keywords and vars / internal stuff. 
+      TODO: Maybe we can consider throwing an error instead for vars that are named the
+      same as keywords?
+
 8/2: Structs Semantics
     - Added the translation module for TypedAst Struct to the the struct model of StrataBoole.
 
 7/30: StrataBoole
-    - Added StrataBoole as a proper dependency to this repo. Created an IR to house it, and the
-      respective translation modules.
+    - Added StrataBoole as a proper dependency to this repo. Created an IR to 
+      house it, and the respective translation modules.
 
     - TODO: need to implement the formal translation for contracts
 
