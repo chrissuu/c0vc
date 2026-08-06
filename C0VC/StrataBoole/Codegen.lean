@@ -57,16 +57,6 @@ private def booleKeywords : List String :=
   , "int"
   , "bool"
   , "Map"
-  , "Ref"
-  , "HeapInt"
-  , "HeapBool"
-  , "HeapRef"
-  , "nextRef"
-  , "alloc"
-  , "len"
-  , "hInt"
-  , "hBool"
-  , "hRef"
   ]
 
 private def isBooleKeyword (name : String) : Bool :=
@@ -197,6 +187,9 @@ private def ppSpec : Spec → String
   | .requires e => s!"  requires {ppExpr e};"
   | .ensures e => s!"  ensures {ppExpr e};"
 
+private def ppModifies (names : List String) : String :=
+  s!"  modifies {commaSep (names.map ppIdent)};"
+
 partial def ppStm (level : Nat) : Stmt → List String
   | .declare name tau =>
       [indent level s!"var {ppIdent name} : {ppTau tau};"]
@@ -229,10 +222,17 @@ private def ppReturn : Option (Tau × String) → String
 
 private def ppProcedure (proc : Procedure) : String :=
   let specBlock :=
-    if proc.specs.isEmpty then
+    let specLines := proc.specs.map ppSpec
+    let modifiesLines :=
+      if proc.modifies.isEmpty then
+        []
+      else
+        [ppModifies proc.modifies]
+    let allSpecLines := specLines ++ modifiesLines
+    if allSpecLines.isEmpty then
       ""
     else
-      "\nspec {\n" ++ String.intercalate "\n" (proc.specs.map ppSpec) ++ "\n}"
+      "\nspec {\n" ++ String.intercalate "\n" allSpecLines ++ "\n}"
   match proc.body with
   | none =>
       s!"procedure {ppIdent proc.name}({ppParams proc.params}) {ppReturn proc.ret}{specBlock};"
