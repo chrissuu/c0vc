@@ -1,0 +1,29 @@
+struct Pair {
+  int x;
+  bool ok;
+};
+
+int read_x(struct Pair[] pairs, int i) {
+  return pairs[i].x;
+}
+
+bool read_ok(struct Pair[] pairs, int i) {
+  return pairs[i].ok;
+}
+
+void write_pair(struct Pair[] pairs, int i, int x, bool ok) {
+  pairs[i].x = x;
+  pairs[i].ok = ok;
+  return;
+}
+
+int allocate_and_read(int n) {
+  struct Pair[] pairs = alloc_array(struct Pair, n);
+  pairs[0].x = 42;
+  pairs[0].ok = true;
+  return pairs[0].x;
+}
+
+int main() {
+  return allocate_and_read(1);
+}

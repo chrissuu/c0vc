@@ -60,6 +60,7 @@ structure Procedure where
   params : List (Tau × String)
   ret : Option (Tau × String)
   specs : List Spec
+  modifies : List String := []
   body : Option (List Stmt)
 
 structure Program where

@@ -45,6 +45,18 @@ private def typedHeapNames : List String :=
 private def isTypedHeapName (name : String) : Bool :=
   typedHeapNames.contains name
 
+private def heapGlobals : List String :=
+  [ "nextRef", "alloc", "len", "hInt", "hBool", "hRef" ]
+
+private def isHeapGlobal (name : String) : Bool :=
+  heapGlobals.contains name
+
+private def addUnique (xs : List String) (x : String) : List String :=
+  if xs.contains x then xs else xs ++ [x]
+
+private def addUniques (xs ys : List String) : List String :=
+  ys.foldl addUnique xs
+
 private def lvalueAsExpr : LValue → Expr
   | .var name => .var name
   | .mapSlot map key => .mapGet map key
@@ -191,7 +203,7 @@ partial def transExpr (cfg : Config) (e : C0VC.TypedAst.TypedExpr) : Except Stri
   | .call fname args => .ok (.call fname (← args.mapM (transExpr cfg)))
   | .length arrayLike => .ok (.mapGet (.var "len") (← transExpr cfg arrayLike))
   | .alloc _ | .allocArray .. =>
-      .error "StrataBoole backend does not lower allocation yet; heap allocation needs the logical heap pass"
+      .error "internal error: allocation reached expression translation before being hoisted"
   | .deref ptr => .ok (heapAt (← heapNameOfTau e.tau) (← transExpr cfg ptr) (.intLit 0))
   | .arrAccess arr index =>
       if isStructTau e.tau then
@@ -297,16 +309,88 @@ partial def transStructLValueRefAndPath
       .ok (← transLValueAsExpr cfg lv, root, [], none)
 end
 
-private def transAllocationTo (cfg : Config) (lhs : LValue) (val : C0VC.TypedAst.TypedExpr) : Except String (Option (List Stmt)) := do
-  match val.node with
-  | .alloc tau =>
-      .ok (some (finishAllocation lhs (← allocWidthExpr cfg tau)))
+private def allocTempName (idx : Nat) : String :=
+  s!"__alloc{idx}"
+
+mutual
+partial def hoistAllocExpr
+  (cfg : Config)
+  (next : Nat)
+  (e : C0VC.TypedAst.TypedExpr)
+  : Except String (Nat × List Stmt × C0VC.TypedAst.TypedExpr) := do
+  match e.node with
+  | .alloc tau => do
+      let name := allocTempName next
+      let decl := Stmt.declare name (← transTau e.tau)
+      let stms := [decl] ++ finishAllocation (.var name) (← allocWidthExpr cfg tau)
+      .ok (next + 1, stms, { node := .var name, tau := e.tau })
   | .allocArray tau size => do
-      let size ← transExpr cfg size
-      let length ← arrayAllocLengthExpr cfg tau size
-      .ok (some (safetyExpr size ++ [.assert (.binop .lte (.intLit 0) size)] ++ finishAllocation lhs length))
-  | _ =>
-      .ok none
+      let (next, sizeStms, size) ← hoistAllocExpr cfg next size
+      let name := allocTempName next
+      let sizeExpr ← transExpr cfg size
+      let decl := Stmt.declare name (← transTau e.tau)
+      let length ← arrayAllocLengthExpr cfg tau sizeExpr
+      let stms :=
+        sizeStms ++ [decl] ++ safetyExpr sizeExpr ++
+        [.assert (.binop .lte (.intLit 0) sizeExpr)] ++
+        finishAllocation (.var name) length
+      .ok (next + 1, stms, { node := .var name, tau := e.tau })
+  | .binop op lhs rhs => do
+      let (next, lhsStms, lhs) ← hoistAllocExpr cfg next lhs
+      let (next, rhsStms, rhs) ← hoistAllocExpr cfg next rhs
+      .ok (next, lhsStms ++ rhsStms, { e with node := .binop op lhs rhs })
+  | .ternary test thenVal elseVal => do
+      let (next, testStms, test) ← hoistAllocExpr cfg next test
+      let (next, thenStms, thenVal) ← hoistAllocExpr cfg next thenVal
+      let (next, elseStms, elseVal) ← hoistAllocExpr cfg next elseVal
+      .ok (next, testStms ++ thenStms ++ elseStms, { e with node := .ternary test thenVal elseVal })
+  | .call fname args => do
+      let (next, allStms, argsRev) ← args.foldlM
+        (fun (next, allStms, argsRev) arg => do
+          let (next, argStms, arg) ← hoistAllocExpr cfg next arg
+          .ok (next, allStms ++ argStms, arg :: argsRev))
+        (next, [], [])
+      .ok (next, allStms, { e with node := .call fname argsRev.reverse })
+  | .length arrayLike => do
+      let (next, stms, arrayLike) ← hoistAllocExpr cfg next arrayLike
+      .ok (next, stms, { e with node := .length arrayLike })
+  | .deref ptr => do
+      let (next, stms, ptr) ← hoistAllocExpr cfg next ptr
+      .ok (next, stms, { e with node := .deref ptr })
+  | .arrAccess arr index => do
+      let (next, arrStms, arr) ← hoistAllocExpr cfg next arr
+      let (next, indexStms, index) ← hoistAllocExpr cfg next index
+      .ok (next, arrStms ++ indexStms, { e with node := .arrAccess arr index })
+  | .dot struct field => do
+      let (next, stms, struct) ← hoistAllocExpr cfg next struct
+      .ok (next, stms, { e with node := .dot struct field })
+  | .arrow structPtr field => do
+      let (next, stms, structPtr) ← hoistAllocExpr cfg next structPtr
+      .ok (next, stms, { e with node := .arrow structPtr field })
+  | .var _ | .intLit _ | .trueLit | .falseLit | .null | .charLit _ | .stringLit _ | .result | .hastag =>
+      .ok (next, [], e)
+
+partial def hoistAllocLValue
+  (cfg : Config)
+  (next : Nat)
+  (lv : C0VC.TypedAst.TypedLValue)
+  : Except String (Nat × List Stmt × C0VC.TypedAst.TypedLValue) := do
+  match lv.node with
+  | .var _ => .ok (next, [], lv)
+  | .deref ptr => do
+      let (next, stms, ptr) ← hoistAllocLValue cfg next ptr
+      .ok (next, stms, { lv with node := .deref ptr })
+  | .dot struct field => do
+      let (next, stms, struct) ← hoistAllocLValue cfg next struct
+      .ok (next, stms, { lv with node := .dot struct field })
+  | .arrow structPtr field => do
+      let (next, stms, structPtr) ← hoistAllocLValue cfg next structPtr
+      .ok (next, stms, { lv with node := .arrow structPtr field })
+  | .arrAccess arr index => do
+      let (next, arrStms, arr) ← hoistAllocLValue cfg next arr
+      let (next, indexStms, index) ← hoistAllocExpr cfg next index
+      .ok (next, arrStms ++ indexStms, { lv with node := .arrAccess arr index })
+end
 
 private def checkReturns (tail : Bool) : C0VC.TypedAst.Stm → Except String Unit
   | .ret _ =>
@@ -323,32 +407,35 @@ private def checkReturns (tail : Bool) : C0VC.TypedAst.Stm → Except String Uni
       checkReturns tail body
   | _ => .ok ()
 
-partial def transStm (cfg : Config) : C0VC.TypedAst.Stm → Except String (List Stmt)
-  | .nop => .ok []
+partial def transStmFrom (cfg : Config) (next : Nat) : C0VC.TypedAst.Stm → Except String (Nat × List Stmt)
+  | .nop => .ok (next, [])
   | .assign lhs val => do
       if isStructTau lhs.tau || isStructTau val.tau then
-        .error "StrataBoole backend does not lower whole-struct assignment yet"
+        .error "internal error: whole-struct assignment reached StrataBoole translation, but C0/C1 does not define struct assignment"
       else
+        let (next, lhsStms, lhs) ← hoistAllocLValue cfg next lhs
+        let (next, rhsStms, val) ← hoistAllocExpr cfg next val
         let lhs ← transLValue cfg lhs
-        match ← transAllocationTo cfg lhs val with
-        | some stms => .ok (safetyLValue lhs ++ stms)
-        | none =>
-            let rhs ← transExpr cfg val
-            .ok (safetyExpr rhs ++ safetyLValue lhs ++ [.assign lhs rhs])
-  | .ret none => .ok []
+        let rhs ← transExpr cfg val
+        .ok (next, lhsStms ++ rhsStms ++ safetyExpr rhs ++ safetyLValue lhs ++ [.assign lhs rhs])
+  | .ret none => .ok (next, [])
   | .ret (some val) => do
+      let (next, preStms, val) ← hoistAllocExpr cfg next val
       let val ← transExpr cfg val
-      .ok (safetyExpr val ++ [.assign (.var cfg.resultName) val])
+      .ok (next, preStms ++ safetyExpr val ++ [.assign (.var cfg.resultName) val])
   | .expr e => do
+      let (next, preStms, e) ← hoistAllocExpr cfg next e
       let e ← transExpr cfg e
-      .ok (safetyExpr e ++ [.assert (.boolLit true)])
+      .ok (next, preStms ++ safetyExpr e ++ [.assert (.boolLit true)])
   | .assert test => do
+      let (next, preStms, test) ← hoistAllocExpr cfg next test
       let test ← transExpr cfg test
-      .ok (safetyExpr test ++ [.assert test])
-  | .error _ => .ok [.assert (.boolLit false)]
+      .ok (next, preStms ++ safetyExpr test ++ [.assert test])
+  | .error _ => .ok (next, [.assert (.boolLit false)])
   | .annotation (.asserts e) => do
+      let (next, preStms, e) ← hoistAllocExpr cfg next e
       let e ← transExpr cfg e
-      .ok (safetyExpr e ++ [.assert e])
+      .ok (next, preStms ++ safetyExpr e ++ [.assert e])
   | .annotation (.loopInvariant _) =>
       .error "loop invariant annotation must immediately precede a while loop for Boole emission"
   | .annotation (.requires _) =>
@@ -356,37 +443,77 @@ partial def transStm (cfg : Config) : C0VC.TypedAst.Stm → Except String (List 
   | .annotation (.ensures _) =>
       .error "ensures annotation cannot appear in a function body"
   | .ifLit test thenBranch elseBranch => do
+      let (next, preStms, test) ← hoistAllocExpr cfg next test
       let test ← transExpr cfg test
-      .ok (safetyExpr test ++ [.ifElse test (← transStm cfg thenBranch) (← transStm cfg elseBranch)])
+      let (next, thenBody) ← transStmFrom cfg next thenBranch
+      let (next, elseBody) ← transStmFrom cfg next elseBranch
+      .ok (next, preStms ++ safetyExpr test ++ [.ifElse test thenBody elseBody])
   | .whileLit test body => do
+      let (_, preStms, _) ← hoistAllocExpr cfg next test
+      if !preStms.isEmpty then
+        .error "StrataBoole backend does not lower allocation in while conditions yet"
+      else
       let test ← transExpr cfg test
       let testSafety := safetyExpr test
-      let body ← transStm cfg body
-      .ok (testSafety ++ [.whileLoop test [] (body ++ testSafety)])
+      let (next, body) ← transStmFrom cfg next body
+      .ok (next, testSafety ++ [.whileLoop test [] (body ++ testSafety)])
   | .seq (.annotation (.loopInvariant inv)) (.whileLit test body) => do
+      let (_, testPrefix, _) ← hoistAllocExpr cfg next test
+      if !testPrefix.isEmpty then
+        .error "StrataBoole backend does not lower allocation in while conditions yet"
+      else
+      let (_, invPrefix, _) ← hoistAllocExpr cfg next inv
+      if !invPrefix.isEmpty then
+        .error "StrataBoole backend does not lower allocation in loop invariants"
+      else
       let test ← transExpr cfg test
       let inv ← transExpr cfg inv
       let testSafety := safetyExpr test
-      let body ← transStm cfg body
-      .ok (testSafety ++ [.whileLoop test [inv] (body ++ testSafety)])
+      let (next, body) ← transStmFrom cfg next body
+      .ok (next, testSafety ++ [.whileLoop test [inv] (body ++ testSafety)])
   | .seq (.annotation (.loopInvariant inv)) (.seq (.whileLit test body) rest) => do
-      let loop ← transStm cfg (.seq (.annotation (.loopInvariant inv)) (.whileLit test body))
-      let rest ← transStm cfg rest
-      .ok (loop ++ rest)
+      let (next, loop) ← transStmFrom cfg next (.seq (.annotation (.loopInvariant inv)) (.whileLit test body))
+      let (next, rest) ← transStmFrom cfg next rest
+      .ok (next, loop ++ rest)
   | .seq first rest => do
-      .ok ((← transStm cfg first) ++ (← transStm cfg rest))
+      let (next, first) ← transStmFrom cfg next first
+      let (next, rest) ← transStmFrom cfg next rest
+      .ok (next, first ++ rest)
   | .declare varName tau init body => do
       let decl := Stmt.declare varName (← transTau tau)
       let initStms ← match init with
-        | none => .ok []
+        | none => .ok (next, [])
         | some e => do
-            match ← transAllocationTo cfg (.var varName) e with
-            | some stms => .ok stms
-            | none =>
-                let e ← transExpr cfg e
-                .ok (safetyExpr e ++ [.assign (.var varName) e])
-      let bodyStms ← transStm cfg body
-      .ok ([decl] ++ initStms ++ bodyStms)
+            let (next, preStms, e) ← hoistAllocExpr cfg next e
+            let e ← transExpr cfg e
+            .ok (next, preStms ++ safetyExpr e ++ [.assign (.var varName) e])
+      let (next, initStms) := initStms
+      let (next, bodyStms) ← transStmFrom cfg next body
+      .ok (next, [decl] ++ initStms ++ bodyStms)
+
+partial def transStm (cfg : Config) (stm : C0VC.TypedAst.Stm) : Except String (List Stmt) := do
+  .ok (← transStmFrom cfg 0 stm).2
+
+private def modifiedLValue : LValue → List String
+  | .var name =>
+      if isHeapGlobal name then [name] else []
+  | .mapSlot (.var name) _ =>
+      if isHeapGlobal name then [name] else []
+  | .mapSlot (.mapGet (.var name) _) _ =>
+      if isHeapGlobal name then [name] else []
+  | .mapSlot _ _ => []
+
+partial def modifiedStmt : Stmt → List String
+  | .declare _ _ => []
+  | .assign lhs _ => modifiedLValue lhs
+  | .assert _ => []
+  | .ifElse _ thenBody elseBody =>
+      addUniques (thenBody.foldl (fun acc stm => addUniques acc (modifiedStmt stm)) []) (elseBody.foldl (fun acc stm => addUniques acc (modifiedStmt stm)) [])
+  | .whileLoop _ _ body =>
+      body.foldl (fun acc stm => addUniques acc (modifiedStmt stm)) []
+
+private def modifiedStmts (body : List Stmt) : List String :=
+  body.foldl (fun acc stm => addUniques acc (modifiedStmt stm)) []
 
 private def transSpec (cfg : Config) : C0VC.TypedAst.Anno → Except String (Option Spec)
   | .requires e => do
@@ -415,7 +542,8 @@ private def transProcedure (cfg : Config) (f : C0VC.TypedAst.FunctionDef) : Exce
       let stm := bodyStm f.body
       checkReturns true stm
       .ok (some (← transStm cfg stm))
-  .ok { name := f.fname, params, ret, specs, body }
+  let modifies := body.map modifiedStmts |>.getD []
+  .ok { name := f.fname, params, ret, specs, modifies, body }
 
 def runWithConfig (cfg : Config) (program : C0VC.TypedAst.Program) : Except String Program := do
   let structs := program.flatMap (fun f => f.structs)
