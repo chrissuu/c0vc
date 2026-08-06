@@ -1,6 +1,6 @@
+# Worklog
 
-
-GENERAL GOALS::
+## GENERAL GOALS
 1. The programmer should be able to read C0/C1 programs and emit a new Boole file translation
 2. The programmer should be able to inline C0/C1 programs in Lean files and emit a Boole translation
 3. The programmer should be able to inline C0/C1 programs in Lean files, then reason about the Boole program
@@ -9,6 +9,7 @@ GENERAL GOALS::
 6. One of the end goals may be: prove the translations hold! I.e., obligations/annotations proven to be true in Boole => these hold also in C0
     -  this means we can do pretty interesting things, no? We can make proving obligations easier by having our elaboration stage elaborate away unrelated proof material, which makes it easier for statements to be shown true/false in Boole, and the translation correctness theorem gives you Boole Correctness => Elaborated C0 correctness => C0 correctness for free
 
+## WORKLOG
 ---
 8/5: Modifies and Nested Allocations
     - Finished up nested allocations path. See StrataBoole::Trans.lean

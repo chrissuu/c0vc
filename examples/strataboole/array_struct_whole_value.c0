@@ -1,0 +1,16 @@
+struct Pair {
+  int x;
+  bool ok;
+};
+
+void unsupported_whole_values(struct Pair[] pairs, int i) {
+  // C0/C1 does not allow struct values to be assigned or passed directly.
+  // These are the "first-class array-of-struct element value" cases that the
+  // StrataBoole backend intentionally does not model as scalar Boole values.
+
+  // struct Pair local = pairs[i];
+  // takes_pair(pairs[i]);
+  // pairs[i];
+
+  return;
+}

@@ -1,7 +1,5 @@
 /.lake
 
-tests
-
 bin
 
 *.o

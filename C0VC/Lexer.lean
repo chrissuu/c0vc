@@ -1,10 +1,5 @@
 /-
-Lexer & Tokens
-
-We currently opt for a simple maximal munch lexer. It is mostly efficient enough to
-handle modest programs, while also being simple enough to debug and iterate
-quickly on. If Lean develops a lexer library, considering migrating this code
-to the lexer library.
+Lexer
 
 Author(s):
   ~ Chris Su <chrjs@cmu.edu>
