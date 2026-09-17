@@ -1,4 +1,5 @@
 #include <limits.h>
+#include <stdbool.h>
 #include <signal.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -8,9 +9,12 @@
 
 extern int _c0_main(void);
 
+#ifndef C0VC_NO_MAIN
 int main(void) {
-  return _c0_main();
+  printf("%d\n", _c0_main());
+  return 0;
 }
+#endif
 
 void __c0vc_abort(const char *msg) {
   fprintf(stderr, "%s\n", msg);
@@ -37,7 +41,7 @@ void __c0vc_error(void) {
   __c0vc_abort("error statement executed");
 }
 
-void _c0_assert(int cond) {
+void __c0vc_assert(int cond) {
   if (!cond) {
     __c0vc_abort("assertion failed");
   }
@@ -129,3 +133,124 @@ void* __c0vc_check_array_access(void* arr, int index) {
   }
   return arr;
 }
+
+#ifdef C0VC_WITH_15411_LIB
+typedef int c0_float;
+typedef void* c0_double;
+
+union float_or_int {
+  int as_int;
+  float as_float;
+};
+
+union double_or_ptr {
+  void* as_ptr;
+  double as_double;
+};
+
+c0_float fadd(c0_float a, c0_float b) {
+  union float_or_int x; x.as_int = a;
+  union float_or_int y; y.as_int = b;
+  union float_or_int z; z.as_float = x.as_float + y.as_float;
+  return z.as_int;
+}
+
+c0_float fsub(c0_float a, c0_float b) {
+  union float_or_int x; x.as_int = a;
+  union float_or_int y; y.as_int = b;
+  union float_or_int z; z.as_float = x.as_float - y.as_float;
+  return z.as_int;
+}
+
+c0_float fmul(c0_float a, c0_float b) {
+  union float_or_int x; x.as_int = a;
+  union float_or_int y; y.as_int = b;
+  union float_or_int z; z.as_float = x.as_float * y.as_float;
+  return z.as_int;
+}
+
+c0_float fdiv(c0_float a, c0_float b) {
+  union float_or_int x; x.as_int = a;
+  union float_or_int y; y.as_int = b;
+  union float_or_int z; z.as_float = x.as_float / y.as_float;
+  return z.as_int;
+}
+
+bool fless(c0_float a, c0_float b) {
+  union float_or_int x; x.as_int = a;
+  union float_or_int y; y.as_int = b;
+  return x.as_float < y.as_float;
+}
+
+c0_float itof(int a) {
+  union float_or_int x; x.as_float = (float)a;
+  return x.as_int;
+}
+
+int ftoi(c0_float a) {
+  union float_or_int x; x.as_int = a;
+  return (int)x.as_float;
+}
+
+c0_double dadd(c0_double a, c0_double b) {
+  union double_or_ptr x; x.as_ptr = a;
+  union double_or_ptr y; y.as_ptr = b;
+  union double_or_ptr z; z.as_double = x.as_double + y.as_double;
+  return z.as_ptr;
+}
+
+c0_double dsub(c0_double a, c0_double b) {
+  union double_or_ptr x; x.as_ptr = a;
+  union double_or_ptr y; y.as_ptr = b;
+  union double_or_ptr z; z.as_double = x.as_double - y.as_double;
+  return z.as_ptr;
+}
+
+c0_double dmul(c0_double a, c0_double b) {
+  union double_or_ptr x; x.as_ptr = a;
+  union double_or_ptr y; y.as_ptr = b;
+  union double_or_ptr z; z.as_double = x.as_double * y.as_double;
+  return z.as_ptr;
+}
+
+c0_double ddiv(c0_double a, c0_double b) {
+  union double_or_ptr x; x.as_ptr = a;
+  union double_or_ptr y; y.as_ptr = b;
+  union double_or_ptr z; z.as_double = x.as_double / y.as_double;
+  return z.as_ptr;
+}
+
+bool dless(c0_double a, c0_double b) {
+  union double_or_ptr x; x.as_ptr = a;
+  union double_or_ptr y; y.as_ptr = b;
+  return x.as_double < y.as_double;
+}
+
+c0_double itod(int a) {
+  union double_or_ptr x; x.as_double = (float)a;
+  return x.as_ptr;
+}
+
+int dtoi(c0_double a) {
+  union double_or_ptr x; x.as_ptr = a;
+  return (int)x.as_double;
+}
+
+void print_dub(c0_double a) {
+  union double_or_ptr x; x.as_ptr = a;
+  fprintf(stderr, "%g\n", x.as_double);
+}
+
+void print_fpt(c0_float a) {
+  union float_or_int x; x.as_int = a;
+  fprintf(stderr, "%g\n", x.as_float);
+}
+
+void print_int(int n) {
+  fprintf(stderr, "%d\n", n);
+}
+
+void print_hex(int n) {
+  fprintf(stderr, "0x%08X\n", n);
+}
+#endif
