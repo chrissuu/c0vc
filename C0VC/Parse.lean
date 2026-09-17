@@ -789,26 +789,30 @@ def parseParams : P (List Param) := do
 
 def parseFdecl : P GDecl := do
   let annosRev ← Parser.foldl (fun acc anno => anno :: acc) [] parseSingleAnnotation
-  let annotations := annosRev.reverse
+  let prefixAnnotations := annosRev.reverse
   let tau ← parseTau
   let fname ← parseIdent
   let _ ← expectKindTokMsg (only .lParen) "expected '(' in function declaration"
   let paramsOpt ← option? parseParams
   let params := paramsOpt.getD []
   let _ ← expectKindTokMsg (only .rParen) "expected ')' in function declaration"
+  let suffixAnnosRev ← Parser.foldl (fun acc anno => anno :: acc) [] parseSingleAnnotation
+  let annotations := prefixAnnotations ++ suffixAnnosRev.reverse
   let _ ← expectKindTokMsg (only .semicolon) "expected ';' after function declaration"
   pure (.fdecl tau fname params annotations)
 
 def parseFdefn : P GDecl := do
   let annosRevOpt ← option? (Parser.foldl (fun acc anno => anno :: acc) [] parseSingleAnnotation)
   let annosRev := annosRevOpt.getD []
-  let annotations := annosRev.reverse
+  let prefixAnnotations := annosRev.reverse
   let tau ← parseTau
   let fname ← parseIdent
   let _ ← expectKindTokMsg (only .lParen) "expected '(' in function definition"
   let paramsOpt ← option? parseParams
   let params := paramsOpt.getD []
   let _ ← expectKindTokMsg (only .rParen) "expected ')' in function definition"
+  let suffixAnnosRev ← Parser.foldl (fun acc anno => anno :: acc) [] parseSingleAnnotation
+  let annotations := prefixAnnotations ++ suffixAnnosRev.reverse
   let _ ← expectKindTokMsg (only .lBrace) "expected '{' to start function body"
   let stms ← Parser.foldl (fun acc stm => stm :: acc) [] parseStm
   let _ ← expectKindTokMsg (only .rBrace) "expected '}' to close function body"

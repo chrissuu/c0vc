@@ -79,6 +79,47 @@ private def typedefAliases (program : C0VC.Ast.Program) : List String :=
     | .typedef _ name => some name
     | _ => none)
 
+mutual
+private partial def stripParsedAnnotationsStm (stm : C0VC.Ast.MarkedStm) : C0VC.Ast.MarkedStm :=
+  let node :=
+    match stm.node with
+    | .assign lhs val => .assign lhs val
+    | .ifLit test thenBranch elseBranch =>
+        .ifLit test (stripParsedAnnotationsStm thenBranch) (stripParsedAnnotationsStm elseBranch)
+    | .whileLit test body step =>
+        .whileLit test (stripParsedAnnotationsStm body) (stripParsedAnnotationsStm step)
+    | .ret valOpt => .ret valOpt
+    | .seq first rest =>
+        .seq (stripParsedAnnotationsStm first) (stripParsedAnnotationsStm rest)
+    | .declare varName type init body =>
+        .declare varName type init (stripParsedAnnotationsStm body)
+    | .asop lhs op value => .asop lhs op value
+    | .forLit init test update body =>
+        .forLit
+          (stripParsedAnnotationsStm init)
+          test
+          (stripParsedAnnotationsStm update)
+          (stripParsedAnnotationsStm body)
+    | .expr e => .expr e
+    | .assert test => .assert test
+    | .error e => .error e
+    | .nop => .nop
+    | .annotation _ => .nop
+    | .incr lhs => .incr lhs
+    | .decr lhs => .decr lhs
+  { stm with node := node }
+end
+
+private def stripParsedAnnotationsGDecl : C0VC.Ast.GDecl → C0VC.Ast.GDecl
+  | .fdecl retType fname params _ =>
+      .fdecl retType fname params []
+  | .fdefn retType fname params body _ =>
+      .fdefn retType fname params (body.map stripParsedAnnotationsStm) []
+  | decl => decl
+
+private def stripParsedAnnotations (program : C0VC.Ast.Program) : C0VC.Ast.Program :=
+  program.map stripParsedAnnotationsGDecl
+
 private def parseArgs : List String → CliConfig → Except String CliConfig
   | [], cfg => .ok cfg
   | "-t" :: rest, cfg => parseArgs rest { cfg with typecheckOnly := true }
@@ -134,7 +175,12 @@ private def runFrontend (cfg : CliConfig) (infile : String) :
   | .error err => pure (.error err)
   | .ok headers =>
       let source ← IO.FS.readFile infile
-      match C0VC.Lexer.munchWithTypedefs (typedefAliases headers) infile source with
+      let lex :=
+        if cfg.emit == .boole then
+          C0VC.Lexer.munchWithTypedefs
+        else
+          C0VC.Lexer.munchWithoutAnnotationsWithTypedefs
+      match lex (typedefAliases headers) infile source with
       | .error err => pure (.error err)
       | .ok tokens =>
           if cfg.dumpTokens then
@@ -143,6 +189,11 @@ private def runFrontend (cfg : CliConfig) (infile : String) :
           match parsed with
           | .error err => pure (.error err)
           | .ok program =>
+              let program :=
+                if cfg.emit == .boole then
+                  program
+                else
+                  stripParsedAnnotations program
               if cfg.dumpAst then
                 IO.println (C0VC.Ast.Print.ppProgram program)
               match C0VC.Elab.run headers program with

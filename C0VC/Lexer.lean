@@ -195,6 +195,9 @@ def matchStringLit (s : String.Slice) (sliceLength : Nat) : Option String.Slice 
 def isValidCharEscape (c : Char) : Bool :=
   c == 'n' || c == 't' || c == 'r' || c == '\\' || c == '\'' || c == '"' || c == '0'
 
+def isWhitespace (c : Char) : Bool :=
+  c == ' ' || c == '\t' || c == '\r' || c == '\n' || c == '\u000B' || c == '\u000C'
+
 def matchCharLit (s : String.Slice) (sliceLength : Nat) : Option String.Slice :=
   if sliceLength < 3 then none
   else if !s.startsWith "'" then none
@@ -233,16 +236,49 @@ partial def nestedBlockCommentLength : List Char → Nat → Nat → Option Nat
   | _ :: rest, depth, consumed =>
       nestedBlockCommentLength rest depth (consumed + 1)
 
+partial def nestedAnnotationBlockLength : List Char → Nat → Nat → Option Nat
+  | [], _, _ => none
+  | '/' :: '*' :: '@' :: rest, depth, consumed =>
+      nestedAnnotationBlockLength rest (depth + 1) (consumed + 3)
+  | '@' :: '*' :: '/' :: rest, depth, consumed =>
+      if depth == 1 then
+        some (consumed + 3)
+      else
+        nestedAnnotationBlockLength rest (depth - 1) (consumed + 3)
+  | _ :: rest, depth, consumed =>
+      nestedAnnotationBlockLength rest depth (consumed + 1)
+
+def startsWithWord (s : String.Slice) (word : String) : Bool :=
+  s.startsWith word &&
+  match (s.drop word.length).front? with
+  | none => true
+  | some c => !isIdentChar c
+
+def startsWithAnnotationKeyword (s : String.Slice) : Bool :=
+  let body := s.dropWhile isWhitespace
+  startsWithWord body "requires"
+  || startsWithWord body "ensures"
+  || startsWithWord body "loop_invariant"
+  || startsWithWord body "asserts"
+  || startsWithWord body "assert"
+
 /-- Matches comments:
 `// ...` until first `\n`, and nested `/* ... */` block comments. -/
-def matchComment (s : String.Slice) (_ : Nat) : Option String.Slice :=
-  if s.startsWith "//@" || s.startsWith "/*@" then
+def matchComment (includeAnnotations : Bool) (s : String.Slice) (_ : Nat) : Option String.Slice :=
+  if includeAnnotations && s.startsWith "//@" && startsWithAnnotationKeyword (s.drop 3) then
+    none
+  else if includeAnnotations && s.startsWith "/*@" && startsWithAnnotationKeyword (s.drop 3) then
     none
   else if s.startsWith "//" then
     let body := s.drop 2
     let commentBody := body.takeWhile (fun c => c != '\n')
     let consumed := 2 + commentBody.toString.length
     some (s.take consumed)
+  else if s.startsWith "/*@" then
+    match nestedAnnotationBlockLength (s.drop 3).toString.toList 1 3 with
+    | some consumed =>
+      some (s.take consumed)
+    | none => none
   else if s.startsWith "/*" then
     match nestedBlockCommentLength (s.drop 2).toString.toList 1 2 with
     | some consumed =>
@@ -265,16 +301,13 @@ def staticTokenLexemes : List String :=
 def matchStaticToken (s : String.Slice) (_ : Nat) : Option String.Slice :=
   (staticTokenLexemes.find? (fun lex => s.startsWith lex)).map (fun lex => s.take lex.length)
 
-def getMatchesAndMaximalMatch (s : String.Slice) : List String.Slice × Option String.Slice :=
+def getMatchesAndMaximalMatch (includeAnnotations : Bool) (s : String.Slice) : List String.Slice × Option String.Slice :=
   let len := s.positions.length
-  let patternMatches := [matchHexLit, matchIntLit, matchIdent, matchStringLit, matchCharLit, matchComment, matchStaticToken]
+  let patternMatches := [matchHexLit, matchIntLit, matchIdent, matchStringLit, matchCharLit, matchComment includeAnnotations, matchStaticToken]
   |> List.map (λ fn => fn s len)
   |> List.filterMap id
   let maximalMatch := List.maxOn? (λ x => x.positions.length) patternMatches
   (patternMatches, maximalMatch)
-
-def isWhitespace (c : Char) : Bool :=
-  c == ' ' || c == '\t' || c == '\r' || c == '\n' || c == '\u000B' || c == '\u000C'
 
 def decodeEscapedChar (c : Char) : Char :=
   match c with
@@ -391,7 +424,7 @@ partial def classifyTypedefsWith (initialTypedefs : List String) (tokens : List 
 partial def classifyTypedefs (tokens : List Token) : List Token :=
   classifyTypedefsWith [] tokens
 
-partial def munchRaw (fileName : String) (body : String) : Except String (List Token) :=
+partial def munchRaw (includeAnnotations : Bool) (fileName : String) (body : String) : Except String (List Token) :=
   let rec go (s : String.Slice) (line col : Nat) (acc : List Token) : Except String (List Token) :=
     if s.isEmpty then
       let loc := SrcLoc.mk line col
@@ -402,10 +435,10 @@ partial def munchRaw (fileName : String) (body : String) : Except String (List T
       if !ws.isEmpty then
         let nextLoc := advanceLocBySlice line col ws
         go (s.drop ws.toString.length) nextLoc.line nextLoc.col acc
-      else if s.startsWith "/*" && !s.startsWith "/*@" && (matchComment s s.positions.length).isNone then
+      else if s.startsWith "/*" && !s.startsWith "/*@" && (matchComment includeAnnotations s s.positions.length).isNone then
         .error s!"lexical error at {fileName}:{line}:{col}: unterminated block comment"
       else
-        let (_, maximalMatch?) := getMatchesAndMaximalMatch s
+        let (_, maximalMatch?) := getMatchesAndMaximalMatch includeAnnotations s
         match maximalMatch? with
         | none =>
           match s.front? with
@@ -416,7 +449,7 @@ partial def munchRaw (fileName : String) (body : String) : Except String (List T
         | some matched =>
           let consumed := matched.toString.length
           let nextLoc := advanceLocBySlice line col matched
-          if (matchComment s s.positions.length).isSome then
+          if (matchComment includeAnnotations s s.positions.length).isSome then
             go (s.drop consumed) nextLoc.line nextLoc.col acc
           else
             match toTokenKind? matched with
@@ -431,12 +464,17 @@ partial def munchRaw (fileName : String) (body : String) : Except String (List T
   go body.toSlice 1 1 []
 
 def munch (fileName : String) (body : String) : Except String (List Token) := do
-  let tokens ← munchRaw fileName body
+  let tokens ← munchRaw true fileName body
   .ok (classifyTypedefs tokens)
 
 def munchWithTypedefs (initialTypedefs : List String) (fileName : String) (body : String) :
     Except String (List Token) := do
-  let tokens ← munchRaw fileName body
+  let tokens ← munchRaw true fileName body
+  .ok (classifyTypedefsWith initialTypedefs tokens)
+
+def munchWithoutAnnotationsWithTypedefs (initialTypedefs : List String) (fileName : String) (body : String) :
+    Except String (List Token) := do
+  let tokens ← munchRaw false fileName body
   .ok (classifyTypedefsWith initialTypedefs tokens)
 
 end C0VC.Lexer
