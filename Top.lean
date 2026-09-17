@@ -33,12 +33,13 @@ structure CliConfig where
   dumpTree      : Bool := false
   dumpTreeRaw   : Bool := false
   dumpIrRaw     : Bool := false
+  devNoRuntime  : Bool := false
 
 private def usage : String :=
   String.intercalate "\n"
     [ "usage: bin/c0vc [-Olevel] [--emit=option] [-l header.h0] [--unsafe] infile.lN"
     , "       bin/c0vc -t infile.lN"
-    , "       [--dump-tokens] [--dump-ast] [--dump-elab] [--dump-elab-raw] [--dump-type] [--dump-type-raw] [--dump-dce] [--dump-dce-raw] [--dump-tree] [--dump-tree-raw] [--dump-ir-raw]"
+    , "       [--dump-tokens] [--dump-ast] [--dump-elab] [--dump-elab-raw] [--dump-type] [--dump-type-raw] [--dump-dce] [--dump-dce-raw] [--dump-tree] [--dump-tree-raw] [--dump-ir-raw] [--dev-no-runtime]"
     ]
 
 private def parseNatOrZero (s : String) : Nat :=
@@ -136,6 +137,7 @@ private def parseArgs : List String → CliConfig → Except String CliConfig
   | "--dump-tree" :: rest, cfg => parseArgs rest { cfg with dumpTree := true }
   | "--dump-tree-raw" :: rest, cfg => parseArgs rest { cfg with dumpTreeRaw := true }
   | "--dump-ir-raw" :: rest, cfg => parseArgs rest { cfg with dumpIrRaw := true }
+  | "--dev-no-runtime" :: rest, cfg => parseArgs rest { cfg with devNoRuntime := true }
   | "-l" :: lib :: rest, cfg => parseArgs rest { cfg with libs := cfg.libs.concat lib }
   | "--lib" :: lib :: rest, cfg => parseArgs rest { cfg with libs := cfg.libs.concat lib }
   | arg :: rest, cfg =>
@@ -272,12 +274,22 @@ def main (args : List String) : IO UInt32 := do
                   IO.eprintln "internal error: expected LLVM output"
                   return 1
             let exe := outputPath infile ".exe"
-            let ll := outputPath infile ".ll"
+            let ll := outputPath infile ".tmp.ll"
             C0VC.LLVM.EmitLlvm.run llvmIR ll
+            let runtimeArgs :=
+              if cfg.devNoRuntime then
+                #[]
+              else if cfg.libs.isEmpty then
+                #["rt/c0vc.c"]
+              else
+                #["-DC0VC_WITH_15411_LIB", "rt/c0vc.c"]
+            let clangArgs :=
+              #[ll] ++ runtimeArgs ++ #["-o", exe]
             let out ← IO.Process.output {
               cmd := "clang-15",
-              args := #[ll, "rt/c0vc.c", "-o", exe]
+              args := clangArgs
             }
+            IO.FS.removeFile ll
             if out.exitCode != 0 then
               IO.eprintln out.stderr
               return 1
