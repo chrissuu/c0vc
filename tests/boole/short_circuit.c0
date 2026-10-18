@@ -1,0 +1,14 @@
+// Checks under && and || are guarded by the short-circuit condition.
+struct node { int val; struct node* next; };
+
+bool positive_head(struct node* p) {
+  return p != NULL && p->val > 0;
+}
+
+bool empty_or_zero(struct node* p) {
+  return p == NULL || p->val == 0;
+}
+
+int second_or_zero(struct node* p) {
+  return (p != NULL && p->next != NULL) ? p->next->val : 0;
+}

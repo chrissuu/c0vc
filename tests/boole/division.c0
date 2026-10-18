@@ -1,0 +1,22 @@
+// C0 division truncates toward zero and traps on x / 0 and INT_MIN / -1.
+int quot()
+//@ensures \result == -3;
+{
+  return -7 / 2;
+}
+
+int rem()
+//@ensures \result == -1;
+{
+  return -7 % 2;
+}
+
+int unchecked(int x, int y) {
+  return x / y;
+}
+
+int checked(int x, int y)
+//@requires y > 0;
+{
+  return x / y;
+}

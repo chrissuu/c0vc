@@ -1,0 +1,2 @@
+null_deref.c0:3:10: error: pointer may be NULL (not proven: solver returned unknown) [null_L3C10]
+null_deref.c0: 1 of 2 proof obligations verified

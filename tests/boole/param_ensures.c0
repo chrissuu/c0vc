@@ -1,0 +1,7 @@
+// A postcondition may not mention a parameter that the function assigns.
+int dec(int n)
+//@ensures \result == n;
+{
+  n = n - 1;
+  return n;
+}

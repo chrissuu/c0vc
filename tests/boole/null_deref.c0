@@ -1,0 +1,10 @@
+// A missing precondition: p may be NULL.
+int get(int* p) {
+  return *p;
+}
+
+int get_checked(int* p)
+//@requires p != NULL;
+{
+  return *p;
+}

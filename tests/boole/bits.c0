@@ -1,0 +1,16 @@
+// Bitwise operators and shift-amount checks.
+int low_byte(int x)
+//@ensures 0 <= \result && \result < 256;
+{
+  return x & 0xFF;
+}
+
+int shift(int x, int k) {
+  return x << k;
+}
+
+int shift_ok(int x, int k)
+//@requires 0 <= k && k < 32;
+{
+  return (x << k) >> k;
+}

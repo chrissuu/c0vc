@@ -1,0 +1,17 @@
+// C0 names that clash with Boole keywords or the heap model are renamed.
+int len(int[] old, int nextRef)
+//@requires nextRef == \length(old);
+{
+  int hInt = nextRef;
+  int call = 0;
+  {
+    int x = 1;
+    call += x;
+  }
+  {
+    int x = 2;
+    call += x;
+  }
+  //@assert hInt == nextRef && call == 3;
+  return hInt + call;
+}

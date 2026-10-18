@@ -3,21 +3,30 @@ struct Pair {
   bool ok;
 };
 
-int read_x(struct Pair[] pairs, int i) {
+int read_x(struct Pair[] pairs, int i)
+//@requires 0 <= i && i < \length(pairs);
+{
   return pairs[i].x;
 }
 
-bool read_ok(struct Pair[] pairs, int i) {
+bool read_ok(struct Pair[] pairs, int i)
+//@requires 0 <= i && i < \length(pairs);
+{
   return pairs[i].ok;
 }
 
-void write_pair(struct Pair[] pairs, int i, int x, bool ok) {
+void write_pair(struct Pair[] pairs, int i, int x, bool ok)
+//@requires 0 <= i && i < \length(pairs);
+{
   pairs[i].x = x;
   pairs[i].ok = ok;
   return;
 }
 
-int allocate_and_read(int n) {
+int allocate_and_read(int n)
+//@requires n > 0;
+//@ensures \result == 42;
+{
   struct Pair[] pairs = alloc_array(struct Pair, n);
   pairs[0].x = 42;
   pairs[0].ok = true;

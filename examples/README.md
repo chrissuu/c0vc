@@ -22,6 +22,12 @@ lake exe c0vc --emit=boole examples/strataboole/array_struct_fields.c0
 
 This writes `array_struct_fields.c0.boole.st` in the current working directory.
 
+To verify it (needs `z3` on `PATH`):
+
+```sh
+lake exe c0vc --verify examples/strataboole/array_struct_fields.c0
+```
+
 To check the DDM bridge example:
 
 ```sh

@@ -12,4 +12,4 @@ root = "Top"
 [[require]]
 name = "StrataBoole"
 git = "https://github.com/strata-org/Strata-Boole"
-rev = "main"
+rev = "95f972128816471bdf988a11b8bf465c3ffe0255"

@@ -1,0 +1,2 @@
+off_by_one.c0:9:10: error: array index may be out of bounds (not proven: solver returned unknown) [bounds_L9C10]
+off_by_one.c0: 2 of 3 proof obligations verified

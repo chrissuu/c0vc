@@ -8,7 +8,7 @@
    "rev": "95f972128816471bdf988a11b8bf465c3ffe0255",
    "name": "StrataBoole",
    "manifestFile": "lake-manifest.json",
-   "inputRev": "main",
+   "inputRev": "95f972128816471bdf988a11b8bf465c3ffe0255",
    "inherited": false,
    "configFile": "lakefile.toml"},
   {"url": "https://github.com/strata-org/Strata",

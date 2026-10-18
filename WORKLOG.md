@@ -11,6 +11,25 @@
 
 ## WORKLOG
 ---
+10/17: Boole pipeline end to end
+    - Rewrote StrataBoole lowering around a single expression pass that keeps
+      C0 evaluation order: calls become `call` statements with call-site
+      precondition checks, checks under && / || / ?: are guarded, non-tail
+      returns exit a labelled block, loop invariants are read from their C0
+      position, locals get unique names, assigned parameters are copied.
+    - New heap model: no alloc map, heap well-formedness as free specs,
+      zero-initialized allocation, cells addressed by (object, element, field),
+      `len` is the element count.
+    - Integer models: exact bv32 (default) and checked unbounded ints.
+      Division truncates, div/mod/shift checks in both.
+    - `c0vc --verify` runs Strata and reports obligations at C0 source lines.
+    - Frontend: string literals lex, loop invariants parse after the loop
+      header, parser and typechecker keep source spans, prototype contracts
+      are kept, `main` is optional for Boole.
+    - tests/boole has golden verification tests.
+    - TODO: calls in contracts (pure spec functions), finer framing.
+
+---
 8/5: Modifies and Nested Allocations
     - Finished up nested allocations path. See StrataBoole::Trans.lean
     - Finished the "Modifies" spec for StrataBoole

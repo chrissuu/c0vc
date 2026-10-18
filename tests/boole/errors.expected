@@ -1,0 +1,3 @@
+errors.c0:5:30: error: error() may be reached (not proven: solver returned unknown) [error_L5C30]
+errors.c0:10:20: error: error() may be reached (not proven: solver returned unknown) [error_L10C20]
+errors.c0: 3 of 5 proof obligations verified
