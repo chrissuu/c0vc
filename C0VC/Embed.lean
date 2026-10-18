@@ -16,7 +16,7 @@ def compileC0ToBooleStringWithHeaders
   let tokens ← C0VC.Lexer.munch fileName source
   let parsed ← C0VC.Parse.parseProgramFromTokens tokens
   let elabbed ← C0VC.Elab.run headers parsed
-  let typed ← C0VC.Typechecker.run elabbed
+  let typed ← C0VC.Typechecker.run elabbed (requireMain := false)
   let booleIR ← C0VC.StrataBoole.Trans.run (C0VC.Dce.run typed)
   pure (C0VC.StrataBoole.Codegen.run booleIR)
 

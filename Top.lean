@@ -1,9 +1,6 @@
 /-
 Top
 
-Note: consider moving the in-house cmd line parser to a dedicated
-Lean4 command line parser library.
-
 Author(s):
   ~ Chris Su <chrjs@cmu.edu>
 -/
@@ -34,30 +31,61 @@ structure CliConfig where
   dumpTreeRaw   : Bool := false
   dumpIrRaw     : Bool := false
   devNoRuntime  : Bool := false
+  verify        : Bool := false
+  solver        : String := "z3"
+  solverTimeout : Nat := 10
+  intModel      : C0VC.StrataBoole.IntModel := .bv32
+  outFile       : Option String := none
 
 private def usage : String :=
   String.intercalate "\n"
-    [ "usage: bin/c0vc [-Olevel] [--emit=option] [-l header.h0] [--unsafe] infile.lN"
-    , "       bin/c0vc -t infile.lN"
-    , "       [--dump-tokens] [--dump-ast] [--dump-elab] [--dump-elab-raw] [--dump-type] [--dump-type-raw] [--dump-dce] [--dump-dce-raw] [--dump-tree] [--dump-tree-raw] [--dump-ir-raw] [--dev-no-runtime]"
+    [ "usage: bin/c0vc [options] infile.c0"
+    , ""
+    , "  --emit=llvm|exe|boole  output to produce (default: llvm)"
+    , "  -o FILE                write the output to FILE"
+    , "  -l, --lib HEADER       use a library header (.h0)"
+    , "  -t, --typecheck-only   stop after typechecking"
+    , "  -O LEVEL, --opt=LEVEL  optimization level"
+    , "  --unsafe               omit runtime safety checks (LLVM)"
+    , ""
+    , "verification (StrataBoole):"
+    , "  --verify               verify the program and report failed obligations"
+    , "  --solver=NAME          SMT solver executable, z3 or cvc5 (default: z3)"
+    , "  --timeout=SECONDS      solver timeout per obligation (default: 10)"
+    , "  --int-model=bv32|checked"
+    , "                         bv32: exact 32-bit C0 arithmetic (default)"
+    , "                         checked: unbounded ints, overflow is an obligation"
+    , ""
+    , "debugging:"
+    , "  --dump-tokens --dump-ast --dump-elab --dump-elab-raw --dump-type --dump-type-raw"
+    , "  --dump-dce --dump-dce-raw --dump-tree --dump-tree-raw --dump-ir-raw --dev-no-runtime"
     ]
 
-private def parseNatOrZero (s : String) : Nat :=
-  match s.toNat? with
-  | some n => n
-  | none => 0
+private def parseNat (flag value : String) : Except String Nat :=
+  match value.toNat? with
+  | some n => .ok n
+  | none => .error s!"{flag} expects a number, got `{value}`"
 
-private def parseEmit (s : String) : EmitTarget :=
+private def parseEmit (s : String) : Except String EmitTarget :=
   match s with
-  | "exe" => .exe
-  | "llvm" => .llvm
-  | "boole" => .boole
-  | _ => .llvm
+  | "exe" => .ok .exe
+  | "llvm" => .ok .llvm
+  | "boole" => .ok .boole
+  | _ => .error s!"unknown emit target `{s}` (expected llvm, exe or boole)"
 
-private def outputPath (infile : String) (ext : String) : String :=
-  let parts := infile.splitOn "/"
-  let basename := parts.getLast?.getD infile
-  basename ++ ext
+private def parseIntModel (s : String) : Except String C0VC.StrataBoole.IntModel :=
+  match s with
+  | "bv32" => .ok .bv32
+  | "checked" => .ok .checked
+  | _ => .error s!"unknown int model `{s}` (expected bv32 or checked)"
+
+private def outputPath (cfg : CliConfig) (infile : String) (ext : String) : String :=
+  match cfg.outFile with
+  | some file => file
+  | none =>
+      let parts := infile.splitOn "/"
+      let basename := parts.getLast?.getD infile
+      basename ++ ext
 
 private def parseProgramFile (file : String) : IO (Except String C0VC.Ast.Program) := do
   let source ← IO.FS.readFile file
@@ -126,6 +154,7 @@ private def parseArgs : List String → CliConfig → Except String CliConfig
   | "-t" :: rest, cfg => parseArgs rest { cfg with typecheckOnly := true }
   | "--typecheck-only" :: rest, cfg => parseArgs rest { cfg with typecheckOnly := true }
   | "--unsafe" :: rest, cfg => parseArgs rest { cfg with unsafeMode := true }
+  | "--verify" :: rest, cfg => parseArgs rest { cfg with verify := true }
   | "--dump-tokens" :: rest, cfg => parseArgs rest { cfg with dumpTokens := true }
   | "--dump-ast" :: rest, cfg => parseArgs rest { cfg with dumpAst := true }
   | "--dump-elab" :: rest, cfg => parseArgs rest { cfg with dumpElab := true }
@@ -140,27 +169,31 @@ private def parseArgs : List String → CliConfig → Except String CliConfig
   | "--dev-no-runtime" :: rest, cfg => parseArgs rest { cfg with devNoRuntime := true }
   | "-l" :: lib :: rest, cfg => parseArgs rest { cfg with libs := cfg.libs.concat lib }
   | "--lib" :: lib :: rest, cfg => parseArgs rest { cfg with libs := cfg.libs.concat lib }
-  | arg :: rest, cfg =>
+  | "-o" :: file :: rest, cfg => parseArgs rest { cfg with outFile := some file }
+  | "-O" :: level :: rest, cfg => do
+      parseArgs rest { cfg with optLevel := ← parseNat "-O" level }
+  | arg :: rest, cfg => do
+      let valueOf (flag : String) := (arg.drop flag.length).toString
       if arg.startsWith "--emit=" then
-        let emit := parseEmit ((arg.drop 7).toString)
-        parseArgs rest { cfg with emit := emit }
-      else if arg.startsWith "-e" then
-        let emit := parseEmit ((arg.drop 2).toString)
-        parseArgs rest { cfg with emit := emit }
+        parseArgs rest { cfg with emit := ← parseEmit (valueOf "--emit=") }
+      else if arg.startsWith "--solver=" then
+        parseArgs rest { cfg with solver := valueOf "--solver=" }
+      else if arg.startsWith "--timeout=" then
+        parseArgs rest { cfg with solverTimeout := ← parseNat "--timeout" (valueOf "--timeout=") }
+      else if arg.startsWith "--int-model=" then
+        parseArgs rest { cfg with intModel := ← parseIntModel (valueOf "--int-model=") }
       else if arg.startsWith "--opt=" then
-        let optLevel := parseNatOrZero ((arg.drop 6).toString)
-        parseArgs rest { cfg with optLevel := optLevel }
-      else if arg.startsWith "-O" then
-        let optLevel := parseNatOrZero ((arg.drop 2).toString)
-        parseArgs rest { cfg with optLevel := optLevel }
-      else if arg.startsWith "-l" then
-        let lib := (arg.drop 2).toString
-        parseArgs rest { cfg with libs := cfg.libs.concat lib }
+        parseArgs rest { cfg with optLevel := ← parseNat "--opt" (valueOf "--opt=") }
       else if arg.startsWith "--lib=" then
-        let lib := (arg.drop 6).toString
-        parseArgs rest { cfg with libs := cfg.libs.concat lib }
+        parseArgs rest { cfg with libs := cfg.libs.concat (valueOf "--lib=") }
+      else if arg.startsWith "-e" && arg.length > 2 then
+        parseArgs rest { cfg with emit := ← parseEmit (valueOf "-e") }
+      else if arg.startsWith "-O" && arg.length > 2 then
+        parseArgs rest { cfg with optLevel := ← parseNat "-O" (valueOf "-O") }
+      else if arg.startsWith "-l" && arg.length > 2 then
+        parseArgs rest { cfg with libs := cfg.libs.concat (valueOf "-l") }
       else if arg.startsWith "-" then
-        parseArgs rest cfg
+        .error s!"unknown option `{arg}`"
       else
         match cfg.infile with
         | none => parseArgs rest { cfg with infile := some arg }
@@ -168,7 +201,7 @@ private def parseArgs : List String → CliConfig → Except String CliConfig
 
 private inductive FrontendOutput where
   | llvm (program : C0VC.LLVM.IR.Program)
-  | boole (program : String)
+  | boole (program : C0VC.StrataBoole.Program)
 
 private def runFrontend (cfg : CliConfig) (infile : String) :
     IO (Except String (Option FrontendOutput)) := do
@@ -177,8 +210,9 @@ private def runFrontend (cfg : CliConfig) (infile : String) :
   | .error err => pure (.error err)
   | .ok headers =>
       let source ← IO.FS.readFile infile
+      let toBoole := cfg.emit == .boole
       let lex :=
-        if cfg.emit == .boole then
+        if toBoole then
           C0VC.Lexer.munchWithTypedefs
         else
           C0VC.Lexer.munchWithoutAnnotationsWithTypedefs
@@ -192,7 +226,7 @@ private def runFrontend (cfg : CliConfig) (infile : String) :
           | .error err => pure (.error err)
           | .ok program =>
               let program :=
-                if cfg.emit == .boole then
+                if toBoole then
                   program
                 else
                   stripParsedAnnotations program
@@ -205,7 +239,7 @@ private def runFrontend (cfg : CliConfig) (infile : String) :
                     IO.println (C0VC.ElabbedAst.Print.ppProgram elabbedAst)
                   if cfg.dumpElabRaw then
                     IO.println (C0VC.ElabbedAst.Print.ppProgramRaw elabbedAst)
-                  match C0VC.Typechecker.run elabbedAst with
+                  match C0VC.Typechecker.run elabbedAst (requireMain := !toBoole) with
                   | .error err => pure (.error err)
                   | .ok typedAst =>
                       if cfg.dumpType then
@@ -226,8 +260,8 @@ private def runFrontend (cfg : CliConfig) (infile : String) :
                           IO.println (C0VC.TypedAst.Print.ppProgramRaw dceProgram)
                         match cfg.emit with
                         | .boole =>
-                            match C0VC.StrataBoole.Trans.run dceProgram with
-                            | .ok booleIR => pure (.ok (some (.boole (C0VC.StrataBoole.Codegen.run booleIR))))
+                            match C0VC.StrataBoole.Trans.runWithConfig { intModel := cfg.intModel } dceProgram with
+                            | .ok booleIR => pure (.ok (some (.boole booleIR)))
                             | .error err => pure (.error err)
                         | .llvm | .exe =>
                             let treeProgram := C0VC.LLVM.Tree.Trans.run dceProgram
@@ -239,6 +273,30 @@ private def runFrontend (cfg : CliConfig) (infile : String) :
                             if cfg.dumpIrRaw then
                               IO.println (C0VC.LLVM.IR.Print.ppProgramRaw llvmIR)
                             pure (.ok (some (.llvm llvmIR)))
+
+private def solverAvailable (solver : String) : IO Bool := do
+  try
+    let out ← IO.Process.output { cmd := solver, args := #["--version"] }
+    pure (out.exitCode == 0)
+  catch _ =>
+    pure false
+
+private def runVerifier (cfg : CliConfig) (infile : String) (program : C0VC.StrataBoole.Program) :
+    IO UInt32 := do
+  if !(← solverAvailable cfg.solver) then
+    IO.eprintln s!"{infile}: cannot run SMT solver `{cfg.solver}`; install it or pass --solver=PATH"
+    return 2
+  let outcomes ← match ← (C0VC.StrataBoole.Verify.run infile program cfg.solver cfg.solverTimeout).toBaseIO with
+    | .ok outcomes => pure outcomes
+    | .error err =>
+        IO.eprintln s!"{infile}: verification failed to run: {err}"
+        return 2
+  let failures := outcomes.filterMap (·.render infile)
+  for line in failures do
+    IO.println line
+  let proved := outcomes.size - failures.size
+  IO.println s!"{infile}: {proved} of {outcomes.size} proof obligations verified"
+  return if failures.isEmpty then 0 else 1
 
 def main (args : List String) : IO UInt32 := do
   let cfgE := parseArgs args {}
@@ -254,6 +312,7 @@ def main (args : List String) : IO UInt32 := do
         return 1
     | some file => pure file
 
+  let cfg := if cfg.verify then { cfg with emit := .boole } else cfg
   let frontendResult ← runFrontend cfg infile
   match frontendResult with
   | .error err =>
@@ -265,7 +324,7 @@ def main (args : List String) : IO UInt32 := do
         match cfg.emit with
         | .llvm =>
             match output with
-            | .llvm llvmIR => C0VC.LLVM.EmitLlvm.run llvmIR (outputPath infile ".ll")
+            | .llvm llvmIR => C0VC.LLVM.EmitLlvm.run llvmIR (outputPath cfg infile ".ll")
             | .boole _ => IO.eprintln "internal error: expected LLVM output"; return 1
         | .exe =>
             let llvmIR ← match output with
@@ -273,8 +332,8 @@ def main (args : List String) : IO UInt32 := do
               | .boole _ =>
                   IO.eprintln "internal error: expected LLVM output"
                   return 1
-            let exe := outputPath infile ".exe"
-            let ll := outputPath infile ".tmp.ll"
+            let exe := outputPath cfg infile ".exe"
+            let ll := exe ++ ".tmp.ll"
             C0VC.LLVM.EmitLlvm.run llvmIR ll
             let runtimeArgs :=
               if cfg.devNoRuntime then
@@ -295,8 +354,11 @@ def main (args : List String) : IO UInt32 := do
               return 1
         | .boole =>
             match output with
-            | .boole boole =>
-                IO.FS.writeFile (outputPath infile ".boole.st") boole
+            | .boole booleIR =>
+                if !cfg.verify || cfg.outFile.isSome then
+                  IO.FS.writeFile (outputPath cfg infile ".boole.st") (C0VC.StrataBoole.Codegen.run booleIR)
+                if cfg.verify then
+                  return ← runVerifier cfg infile booleIR
             | .llvm _ =>
                 IO.eprintln "internal error: expected Boole output"
                 return 1

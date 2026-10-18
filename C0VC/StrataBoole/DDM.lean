@@ -32,8 +32,9 @@ def programToDDMProgram
 
 def typedProgramToBooleProgram
     (program : C0VC.TypedAst.Program)
+    (cfg : C0VC.StrataBoole.Trans.Config := {})
     : Except String C0VC.StrataBoole.Program :=
-  C0VC.StrataBoole.Trans.run (C0VC.Dce.run program)
+  C0VC.StrataBoole.Trans.runWithConfig cfg (C0VC.Dce.run program)
 
 def typedProgramToBooleText
     (program : C0VC.TypedAst.Program)
