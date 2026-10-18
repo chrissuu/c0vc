@@ -179,18 +179,21 @@ def matchIdent (s : String.Slice) (_ : Nat) : Option String.Slice :=
     if identChars.isEmpty then none
     else some identChars
 
-def endsWithUnescapedQuote (s : String.Slice) : Bool :=
-  if !s.endsWith "\"" then
-    false
-  else
-    let beforeLast := s.dropEnd 1
-    let trailingBackslashes := beforeLast.takeEndWhile (λ c => c == '\\')
-    trailingBackslashes.toString.length % 2 == 0
+-- Length (in chars) of a string literal body up to and including the closing
+-- quote, or none if the literal is unterminated on its line.
+private def stringLitLength : List Char → Nat → Option Nat
+  | [], _ => none
+  | '\n' :: _, _ => none
+  | '\\' :: _ :: rest, n => stringLitLength rest (n + 2)
+  | '"' :: _, n => some (n + 1)
+  | _ :: rest, n => stringLitLength rest (n + 1)
 
+-- string ::= '"' (char | escape)* '"'
 def matchStringLit (s : String.Slice) (sliceLength : Nat) : Option String.Slice :=
-  if sliceLength < 2 then none
-  else if !(s.startsWith "\"" && endsWithUnescapedQuote s) then none
-  else some s
+  if sliceLength < 2 || !s.startsWith "\"" then none
+  else
+    let body := (s.drop 1).takeWhile (fun c => c != '\n')
+    (stringLitLength body.toString.toList 1).map s.take
 
 def isValidCharEscape (c : Char) : Bool :=
   c == 'n' || c == 't' || c == 'r' || c == '\\' || c == '\'' || c == '"' || c == '0'
@@ -320,6 +323,11 @@ def decodeEscapedChar (c : Char) : Char :=
   | '0' => '\u0000'
   | x => x
 
+def decodeEscapes : List Char → String
+  | [] => ""
+  | '\\' :: c :: rest => (decodeEscapedChar c).toString ++ decodeEscapes rest
+  | c :: rest => c.toString ++ decodeEscapes rest
+
 -- Helper for tracking SrcLoc.
 def advanceLocByChars : Nat → Nat → List Char → SrcLoc
   | line, col, [] => SrcLoc.mk line col
@@ -343,7 +351,7 @@ def toTokenKind? (matched : String.Slice) : Option TokenKind :=
     some (.hexLit lex)
   else if matched.startsWith "\"" then
     if lex.length < 2 then none
-    else some (.stringLit ((matched.drop 1).dropEnd 1).toString)
+    else some (.stringLit (decodeEscapes ((matched.drop 1).dropEnd 1).toString.toList))
   else if matched.startsWith "'" then
     if lex.length == 3 then
       match (matched.drop 1).front? with
