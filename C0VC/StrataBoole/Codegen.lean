@@ -121,6 +121,10 @@ partial def ppExpr (model : IntModel) : Expr → String
   | .forall binders body =>
       let bs := commaSep (binders.map fun (name, tau) => s!"{name} : {ppTau model tau}")
       parens s!"forall {bs} :: {ppExpr model body}"
+  | .exists binders body =>
+      let bs := commaSep (binders.map fun (name, tau) => s!"{name} : {ppTau model tau}")
+      parens s!"exists {bs} :: {ppExpr model body}"
+  | .fnCall name args => s!"{name}({commaSep (args.map (ppExpr model))})"
 
 private def ppLValue (model : IntModel) : LValue → String
   | .var name => name
@@ -195,12 +199,20 @@ private def ppProcedure (model : IntModel) (proc : Procedure) : String :=
       let bodyText := String.intercalate "\n" (body.flatMap (ppStm model 1))
       s!"{header}\n\{\n{bodyText}\n};"
 
+private def ppFunction (model : IntModel) (fn : Function) : String :=
+  let header := s!"function {fn.name}({ppParams model fn.params}) : {ppTau model fn.ret}"
+  match fn.body with
+  | none => header ++ ";"
+  | some body => s!"{header} \{\n  {ppExpr model body}\n}"
+
 def run (program : Program) : ProgramText :=
   let model := program.intModel
   let typeDecls := if program.usesStrings then ["type C0String;", ""] else []
   let globals := program.globals.map fun (name, tau) => s!"var {name} : {ppTau model tau};"
+  let functions := program.functions.map (ppFunction model)
   let header := ["program Boole;", ""] ++ typeDecls ++
-    (if globals.isEmpty then [] else globals ++ [""])
+    (if globals.isEmpty then [] else globals ++ [""]) ++
+    (if functions.isEmpty then [] else [String.intercalate "\n\n" functions, ""])
   String.intercalate "\n" header ++ "\n" ++
     String.intercalate "\n\n" (program.procedures.map (ppProcedure model)) ++ "\n"
 

@@ -66,6 +66,9 @@ inductive Expr where
   | mapGet (map key : Expr)
   | old (e : Expr)
   | forall (binders : List (String × Tau)) (body : Expr)
+  | exists (binders : List (String × Tau)) (body : Expr)
+  /-- Application of a Boole `function`. -/
+  | fnCall (name : String) (args : List Expr)
 deriving Inhabited, BEq, Repr
 
 inductive LValue where
@@ -112,6 +115,17 @@ structure Procedure where
   body : Option (List Stmt)
 deriving Inhabited, Repr
 
+/--
+A Boole `function` standing for a pure C0 function, so that contracts can call
+it. Without a body it is uninterpreted.
+-/
+structure Function where
+  name : String
+  params : List (Tau × String)
+  ret : Tau
+  body : Option Expr := none
+deriving Inhabited, Repr
+
 /-- What a labelled proof obligation means at the C0 level. -/
 structure LabelInfo where
   label : String
@@ -125,6 +139,7 @@ structure Program where
   /-- Whether the program uses the opaque C0 string type. -/
   usesStrings : Bool := false
   globals : List (String × Tau) := []
+  functions : List Function := []
   procedures : List Procedure
   labels : Array LabelInfo := #[]
 deriving Inhabited, Repr

@@ -11,6 +11,18 @@
 
 ## WORKLOG
 ---
+10/23: Spec functions
+    - Contracts can call pure functions. They become Boole functions over the
+      heap maps: definitional for expression-form bodies and the standard
+      search loop (forall / exists), uninterpreted otherwise.
+    - Header @ensures are trusted (free); prototype contracts are renamed to
+      the definition's parameter names.
+    - Lexer treats @ as whitespace inside annotations; parse errors report a
+      location and the failing declaration's own message.
+    - TODO: allocating functions in contracts, recursive spec functions
+      (needs termination), induction lemmas.
+
+---
 10/17: Boole pipeline end to end
     - Rewrote StrataBoole lowering around a single expression pass that keeps
       C0 evaluation order: calls become `call` statements with call-site

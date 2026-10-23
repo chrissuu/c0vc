@@ -82,8 +82,37 @@ parameter in a postcondition means its value on entry, which is also its value
 on return because the body may not assign it. Runtime
 checks inside a contract, such as the bounds check in `//@requires A[0] > 0`,
 become extra clauses before it. Contracts on prototypes and header declarations
-are merged into the function's contract. Calls, allocation and string literals
-are rejected inside contracts.
+are merged into the function's contract, with the prototype's parameter names
+renamed to the definition's. A header function's `@ensures` is trusted (it is a
+free `ensures`), since there is no body to check it against. Allocation and
+string literals are rejected inside contracts.
+
+### Spec functions
+
+Contracts can call pure functions: functions that neither write memory nor
+allocate, directly or through calls. Each pure function that a contract uses
+gets a Boole function that takes the heap maps as extra arguments,
+
+```boole
+function is_sorted_fn(__len : ..., __hInt : ..., __hBool : ..., __hRef : ...,
+                      A : int, lo : bv W32, hi : bv W32) : bool { ... }
+```
+
+and a call in a contract applies it to the current heap. The callee's
+preconditions become obligations at the contract's call site. The function's
+procedure gets the free postcondition `\result == is_sorted_fn(heap, args)`, so
+the result of a call in code agrees with the same call in a contract.
+
+The function body is
+- the body itself when it is in expression form: returns, `if`/`else`, local
+  declarations and assignments;
+- a quantifier for the standard search loop. `for (int i = lo; i < hi; i++)
+  if (c) return false; return true;` becomes `forall i :: lo <= i < hi ==> !c`,
+  and the dual returning `true` from the loop becomes `exists`. Both `<` and `<=`
+  bounds are recognized, and loop invariants are ignored;
+- uninterpreted otherwise. Recursive functions stay uninterpreted: a
+  definitional equation for a function that does not terminate could be
+  inconsistent, and termination is not checked.
 
 ## Integers
 
@@ -165,9 +194,13 @@ a call unless the callee's postcondition restates them.
 
 ## Current Limitations
 
-- Calls inside contracts are rejected, so specification functions such as
-  `is_sorted(A, 0, n)` cannot be used yet. Supporting them requires lowering
-  pure C0 functions to Boole functions that take the heap as an argument.
+- Contracts cannot call functions that allocate, such as one that returns a new
+  struct, because they cannot be Boole functions.
+- Spec functions that are recursive or use loops other than the search loop
+  are uninterpreted, so their meaning is only available through the procedure's
+  link to calls in code.
+- SMT solvers do not do induction: from `is_sorted(A, 0, n)` they get
+  `A[i] <= A[i+1]` for each `i`, but not `A[0] <= A[n-1]`.
 - Framing is per heap map (see above).
 - `\hastag` and C1 `void*` tags are not supported.
 - Strings are opaque: string literals are havocked values and string library
