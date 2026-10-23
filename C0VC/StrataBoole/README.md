@@ -58,9 +58,8 @@ C0 aborts when a check fails, so execution only continues when it holds.
 - Locals get unique Boole names. Names that clash with Boole keywords, the heap
   model, or procedure names are renamed (`len` becomes `len_1`).
 - Boole parameters are immutable. A parameter the body assigns is copied into a
-  local at entry. Because C0 tools disagree on whether `//@ensures` sees the
-  entry or the final value of such a parameter, a postcondition that mentions an
-  assigned parameter is rejected.
+  local at entry. C0 forbids assigning to a variable that occurs in an
+  `@ensures` clause, so such a parameter never appears in a postcondition.
 - A non-tail `return` assigns `__result` and exits the labelled `__body` block.
 - Loop invariants are written where C0 puts them,
   `while (c) //@loop_invariant I; { ... }`, and the same for `for`.
@@ -74,7 +73,9 @@ C0 aborts when a check fails, so execution only continues when it holds.
 
 ### Contracts
 
-`//@requires` and `//@ensures` become `requires` and `ensures` clauses. Runtime
+`//@requires` and `//@ensures` become `requires` and `ensures` clauses; a
+parameter in a postcondition means its value on entry, which is also its value
+on return because the body may not assign it. Runtime
 checks inside a contract, such as the bounds check in `//@requires A[0] > 0`,
 become extra clauses before it. Contracts on prototypes and header declarations
 are merged into the function's contract. Calls, allocation and string literals

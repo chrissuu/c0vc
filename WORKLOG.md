@@ -17,6 +17,8 @@
       precondition checks, checks under && / || / ?: are guarded, non-tail
       returns exit a labelled block, loop invariants are read from their C0
       position, locals get unique names, assigned parameters are copied.
+    - Typechecker enforces the C0 rule that a function may not assign a
+      variable occurring in its @ensures clauses.
     - New heap model: no alloc map, heap well-formedness as free specs,
       zero-initialized allocation, cells addressed by (object, element, field),
       `len` is the element count.

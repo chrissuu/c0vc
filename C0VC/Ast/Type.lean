@@ -834,6 +834,45 @@ def mergeDeclarations (program : C0VC.TypedAst.Program) : C0VC.TypedAst.Program 
     (([] : List C0VC.TypedAst.FunctionDef), ({} : Std.HashSet String))
   keptRev.reverse
 
+partial def typedExprVars (e : C0VC.TypedAst.TypedExpr) : List String :=
+  match e.node with
+  | .var name => [name]
+  | .binop _ l r => typedExprVars l ++ typedExprVars r
+  | .ternary c t f => typedExprVars c ++ typedExprVars t ++ typedExprVars f
+  | .call _ args => args.flatMap typedExprVars
+  | .length a | .deref a | .dot a _ | .arrow a _ => typedExprVars a
+  | .allocArray _ size => typedExprVars size
+  | .arrAccess a i => typedExprVars a ++ typedExprVars i
+  | _ => []
+
+partial def typedStmAssignedVars : C0VC.TypedAst.Stm → List String
+  | .assign lhs _ =>
+      match lhs.node with
+      | .var name => [name]
+      | _ => []
+  | .ifLit _ thenBranch elseBranch => typedStmAssignedVars thenBranch ++ typedStmAssignedVars elseBranch
+  | .whileLit _ body => typedStmAssignedVars body
+  | .seq first rest => typedStmAssignedVars first ++ typedStmAssignedVars rest
+  | .declare _ _ _ body => typedStmAssignedVars body
+  | _ => []
+
+/--
+"The body of a function may not assign to any variable that occurs in an
+@ensures clause" (C0 reference, section 13.1). Checked after prototypes are
+merged, so the contracts of every declaration are covered.
+-/
+def tcEnsuresNotAssigned (f : C0VC.TypedAst.FunctionDef) : Except String Unit := do
+  let assigned := f.body.flatMap typedStmAssignedVars
+  for anno in f.annotations do
+    match anno with
+    | .ensures e =>
+        match (typedExprVars e).find? assigned.contains with
+        | some name =>
+            throw (locateError e.span
+              s!"{f.fname} assigns {name}, which occurs in an @ensures clause; C0 does not allow assigning to variables in a postcondition")
+        | none => pure ()
+    | _ => pure ()
+
 def tcProgramOrdered
     (structs : List (String × List Field))
     (fenv : FEnv)
@@ -852,7 +891,9 @@ def tcProgramOrdered
           | some typed => .ok (typed :: typedAcc, visibleSenv)
           | none => .ok (typedAcc, visibleSenv))
     ([], {})
-  .ok (mergeDeclarations typedRev.reverse)
+  let merged := mergeDeclarations typedRev.reverse
+  merged.forM tcEnsuresNotAssigned
+  .ok merged
 
 def run (program : Program) (requireMain : Bool := true) : Except String C0VC.TypedAst.Program := do
   if requireMain then

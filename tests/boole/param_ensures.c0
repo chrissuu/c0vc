@@ -1,4 +1,4 @@
-// A postcondition may not mention a parameter that the function assigns.
+// C0 reference 13.1: the body may not assign a variable that occurs in @ensures.
 int dec(int n)
 //@ensures \result == n;
 {

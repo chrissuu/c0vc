@@ -1,1 +1,1 @@
-param_ensures.c0:3:12: postcondition mentions parameter n, which dec assigns; copy n into a local variable and assign that instead
+param_ensures.c0:3:12: dec assigns n, which occurs in an @ensures clause; C0 does not allow assigning to variables in a postcondition

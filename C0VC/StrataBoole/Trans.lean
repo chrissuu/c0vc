@@ -604,17 +604,6 @@ private partial def assignedVars : CStm → List String
   | .declare _ _ _ body => assignedVars body
   | _ => []
 
-private partial def exprVars (e : CExpr) : List String :=
-  match e.node with
-  | .var name => [name]
-  | .binop _ l r => exprVars l ++ exprVars r
-  | .ternary c t f => exprVars c ++ exprVars t ++ exprVars f
-  | .call _ args => args.flatMap exprVars
-  | .length a | .deref a | .dot a _ | .arrow a _ => exprVars a
-  | .allocArray _ size => exprVars size
-  | .arrAccess a i => exprVars a ++ exprVars i
-  | _ => []
-
 private partial def declaredIn : Stmt → List String
   | .declare name _ => [name]
   | .ifElse _ t f => t.flatMap declaredIn ++ f.flatMap declaredIn
@@ -769,7 +758,6 @@ private def resetProc (fname : String) : M Unit :=
 
 private def lowerSig (usesHeap : Bool) (f : C0VC.TypedAst.FunctionDef) : M FnSig := do
   resetProc f.fname
-  let assigned := (assignedVars (bodyStm f.body)).filter fun n => f.params.any (·.2 == n)
   withScope do
     let params ← f.params.mapM fun (tau, name) => do
       let bt ← lowerTau none tau
@@ -789,12 +777,6 @@ private def lowerSig (usesHeap : Bool) (f : C0VC.TypedAst.FunctionDef) : M FnSig
             pure (requires ++ clauses.map (fun (_, c) => (c, e.span)),
                   specs ++ clauses.map fun (l, c) => { kind := .requires, expr := c, label := some l })
         | .ensures e =>
-            -- C0 tools disagree on whether a postcondition sees a parameter's
-            -- entry value or its final value, so reject the ambiguous case.
-            match (exprVars e).find? assigned.contains with
-            | some name =>
-                fail s!"postcondition mentions parameter {name}, which {f.fname} assigns; copy {name} into a local variable and assign that instead" e.span
-            | none => pure ()
             let (pre, c) ← lowerExpr e
             let obs ← specObligations "postconditions" e.span pre
             let label ← mkLabel "ensures" "postcondition may not hold" e.span
@@ -819,8 +801,8 @@ private def lowerBody (usesHeap : Bool) (f : C0VC.TypedAst.FunctionDef) (sig : F
     let mut prelude := #[]
     for (tau, boogieName, c0Name) in sig.params do
       if assigned.contains c0Name then
-        -- Boole parameters are immutable, and C0 postconditions see the
-        -- parameter values from function entry. Mutate a local copy.
+        -- Boole parameters are immutable, so mutate a local copy. The
+        -- typechecker guarantees the parameter does not occur in @ensures.
         modify fun st => { st with used := st.used.insert boogieName }
         let localName ← bindVar c0Name tau
         prelude := prelude.push (Stmt.declare localName tau) |>.push (.assign (.var localName) (.var boogieName))
