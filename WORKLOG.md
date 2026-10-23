@@ -11,6 +11,13 @@
 
 ## WORKLOG
 ---
+10/23: Per-field framing
+    - One heap map per struct leaf field and per array element type, all
+      indexed by (object, element). modifies and loop havocs are per field.
+    - Spec functions take only the heap maps they read, closed over calls.
+    - bigstruct.l4 now verifies in seconds (was a timeout).
+
+---
 10/23: Spec functions
     - Contracts can call pure functions. They become Boole functions over the
       heap maps: definitional for expression-form bodies and the standard

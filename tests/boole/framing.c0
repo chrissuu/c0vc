@@ -1,0 +1,52 @@
+// Each struct field and each array element type has its own heap map, so a
+// call that writes one field keeps what the caller knows about the others.
+struct node {
+  int val;
+  int count;
+  struct node* next;
+};
+
+void bump_count(struct node* p)
+//@requires p != NULL && p->count < 1000;
+{
+  p->count++;
+}
+
+bool is_sorted(int[] A, int lo, int hi)
+//@requires 0 <= lo && lo <= hi && hi <= \length(A);
+{
+  for (int i = lo; i < hi - 1; i++)
+  //@loop_invariant lo <= i;
+  {
+    if (A[i] > A[i+1]) return false;
+  }
+  return true;
+}
+
+int fields(struct node* p, struct node* q, int[] A)
+//@requires p != NULL && q != NULL && \length(A) > 0 && p->count < 1000;
+{
+  p->val = 5;
+  p->next = q;
+  A[0] = 7;
+  bump_count(p);
+  //@assert p->val == 5 && p->next == q;
+  //@assert A[0] == 7;
+  return p->val;
+}
+
+void keeps_sorted(int[] A, int n, struct node* p)
+//@requires 0 <= n && n <= \length(A) && is_sorted(A, 0, n);
+//@requires p != NULL && p->count < 1000;
+//@ensures is_sorted(A, 0, n);
+{
+  bump_count(p);
+}
+
+void loses_count(struct node* p)
+//@requires p != NULL && p->count < 1000;
+{
+  int c = p->count;
+  bump_count(p);
+  //@assert p->count == c;
+}
