@@ -73,9 +73,15 @@ def run (fileName : String) (program : Program) (solver : String) (timeout : Nat
   let source := Codegen.run program
   let ddm ← DDM.booleTextToDDMProgram s!"{fileName}.boole.st" source
   -- Native SMT arrays decide read-over-write chains that the default
-  -- axiomatized map encoding leaves unknown.
+  -- axiomatized map encoding leaves unknown. Boole drops quantifier triggers,
+  -- so z3 needs model-based instantiation to use quantified facts such as
+  -- heap well-formedness and spec-function bodies.
+  let isZ3 := (solver.splitOn "/").getLast!.startsWith "z3"
   let options : Core.VerifyOptions :=
-    { Core.VerifyOptions.quiet with solverTimeout := timeout, useArrayTheory := true }
+    { Core.VerifyOptions.quiet with
+      solverTimeout := timeout
+      useArrayTheory := true
+      solverOptions := if isZ3 then #[("smt.mbqi", "true")] else #[] }
   let results ← Strata.Boole.verify solver ddm (options := options)
   pure <| results.map fun r =>
     let status :=

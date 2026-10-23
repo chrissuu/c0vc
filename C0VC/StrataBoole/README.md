@@ -27,8 +27,12 @@ prog.c0: 7 of 8 proof obligations verified
 ```
 
 The exit code is 0 when every obligation is proved, 1 otherwise. A result that
-the solver reports as unknown is printed with "(not proven: solver returned
-unknown)"; Strata reports most counterexamples after a procedure call this way.
+the solver reports as unknown, typically a loop invariant or quantifier it could
+not decide, is printed with "(not proven: solver returned unknown)".
+
+With z3, `--verify` enables model-based quantifier instantiation
+(`smt.mbqi=true`). Boole drops quantifier triggers, and without it z3 cannot use
+the quantified heap facts and spec-function bodies.
 
 ## Lowering
 
