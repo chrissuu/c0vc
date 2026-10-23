@@ -27,8 +27,11 @@ structure Layout where
   fields : Std.HashMap (String × String) FieldInfo := {}
   /-- Number of flattened slots in each struct. -/
   widths : Std.HashMap String Nat := {}
-  /-- Scalar leaf types of each struct, used to zero-initialize allocations. -/
-  leaves : Std.HashMap String (List TypedAst.Tau) := {}
+  /--
+  Scalar leaf fields of each struct in slot order, as (path, type). A nested
+  field `in.a` has path `["in", "a"]`; its slot is its position in the list.
+  -/
+  leaves : Std.HashMap String (List (List String × TypedAst.Tau)) := {}
 
 instance : Inhabited Layout := ⟨{}⟩
 
@@ -46,12 +49,13 @@ private partial def layoutStruct (senv : SEnv) (layout : Layout) (name : String)
           let layout ← layoutStruct senv layout inner
           let innerWidth := layout.widths.getD inner 0
           let layout := { layout with fields := layout.fields.insert (name, fieldName) { offset, tau } }
-          pure (layout, offset + innerWidth, leaves ++ layout.leaves.getD inner [])
+          let innerLeaves := (layout.leaves.getD inner []).map fun (path, t) => (fieldName :: path, t)
+          pure (layout, offset + innerWidth, leaves ++ innerLeaves)
       | .void => throw s!"invalid void-typed field {name}.{fieldName}"
       | .null => throw s!"invalid null-typed field {name}.{fieldName}"
       | _ =>
           let layout := { layout with fields := layout.fields.insert (name, fieldName) { offset, tau } }
-          pure (layout, offset + 1, leaves ++ [tau]))
+          pure (layout, offset + 1, leaves ++ [([fieldName], tau)]))
     (layout, 0, [])
   pure { layout with
     widths := layout.widths.insert name width
