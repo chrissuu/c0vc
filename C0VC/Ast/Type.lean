@@ -173,7 +173,7 @@ def tcVarReadable (venv : VEnv) (name : String) : Except String VarInfo :=
       .ok info
     else
       .error s!"variable {name} used before initialized"
-  | none => .error s!"Used {name} before defined"
+  | none => .error s!"variable {name} is not declared"
 
 def mergeVEnvAfterBranches (before thenEnv elseEnv : VEnv) : VEnv :=
   before.toList.foldl
@@ -810,6 +810,29 @@ def tcStructDeclFields (visibleSenv : SEnv) (name : String) (fields : List Field
     let _ ← tcValueTypeValid tau s!"field {fieldName} of struct {name}"
     tcStructFieldTypeKnown visibleSenv tau)
 
+partial def renameExprVars (σ : List (String × String)) (e : C0VC.TypedAst.TypedExpr) : C0VC.TypedAst.TypedExpr :=
+  let r := renameExprVars σ
+  let node : C0VC.TypedAst.Expr :=
+    match e.node with
+    | .var name => .var ((σ.lookup name).getD name)
+    | .binop op l rhs => .binop op (r l) (r rhs)
+    | .ternary c t f => .ternary (r c) (r t) (r f)
+    | .call fname args => .call fname (args.map r)
+    | .length a => .length (r a)
+    | .dot a field => .dot (r a) field
+    | .arrow a field => .arrow (r a) field
+    | .allocArray tau n => .allocArray tau (r n)
+    | .deref a => .deref (r a)
+    | .arrAccess a i => .arrAccess (r a) (r i)
+    | other => other
+  { e with node }
+
+def renameAnnoVars (σ : List (String × String)) : C0VC.TypedAst.Anno → C0VC.TypedAst.Anno
+  | .requires e => .requires (renameExprVars σ e)
+  | .ensures e => .ensures (renameExprVars σ e)
+  | .asserts e => .asserts (renameExprVars σ e)
+  | .loopInvariant e => .loopInvariant (renameExprVars σ e)
+
 /--
 Merge prototypes into their definitions. C0 checks the contracts of every
 declaration of a function, so a prototype's annotations are added to the
@@ -817,10 +840,22 @@ definition. Functions that are only declared (header functions) keep a single
 external entry carrying the annotations of all of their declarations.
 -/
 def mergeDeclarations (program : C0VC.TypedAst.Program) : C0VC.TypedAst.Program :=
+  -- The parameter names that each function's annotations are rewritten to:
+  -- the definition's if there is one, otherwise the first declaration's.
+  let canonical : Std.HashMap String (List String) :=
+    program.foldl
+      (fun acc f =>
+        if !f.external then acc.insert f.fname (f.params.map (·.2))
+        else if acc.contains f.fname then acc
+        else acc.insert f.fname (f.params.map (·.2)))
+      {}
   let declAnnos : Std.HashMap String (List C0VC.TypedAst.Anno) :=
     program.foldl
       (fun acc f =>
-        if f.external then acc.insert f.fname ((acc.getD f.fname []) ++ f.annotations) else acc)
+        if f.external then
+          let σ := (f.params.map (·.2)).zip (canonical.getD f.fname [])
+          acc.insert f.fname ((acc.getD f.fname []) ++ f.annotations.map (renameAnnoVars σ))
+        else acc)
       {}
   let defined : Std.HashSet String :=
     program.foldl (fun acc f => if f.external then acc else acc.insert f.fname) {}
