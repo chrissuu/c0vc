@@ -1,0 +1,2 @@
+calls.c0:18:10: error: precondition of half (declared at line 4) may not hold [precondition_L18C10]
+calls.c0: 13 of 14 proof obligations verified

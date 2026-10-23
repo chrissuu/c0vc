@@ -494,6 +494,13 @@ def translateCmd
     , lc
     , tenv'')
 
+  | .checkAddr dest =>
+    let (stmsDest, _, _, tc', tenv') := translateAddr cfg senv dest tc fenv tenv
+    ( stmsDest
+    , tc'
+    , lc
+    , tenv')
+
   | .call fname args =>
     let (stms, transArgs, tc', tenv') :=
       List.foldr

@@ -1,0 +1,22 @@
+// Non-tail returns, including from inside a loop.
+int abs(int x)
+//@requires x > -2147483648;
+//@ensures \result >= 0;
+{
+  if (x < 0) return -x;
+  return x;
+}
+
+int find(int x, int[] A, int n)
+//@requires 0 <= n && n <= \length(A);
+//@ensures -1 <= \result && \result < n;
+{
+  int i = 0;
+  while (i < n)
+  //@loop_invariant 0 <= i && i <= n;
+  {
+    if (A[i] == x) return i;
+    i++;
+  }
+  return -1;
+}

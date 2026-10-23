@@ -1,0 +1,11 @@
+// Loop invariants in C0 position, bounds checks over a bounded loop.
+bool contains(int x, int[] A, int n)
+//@requires 0 <= n && n <= \length(A);
+{
+  for (int i = 0; i < n; i++)
+  //@loop_invariant 0 <= i && i <= n;
+  {
+    if (A[i] == x) return true;
+  }
+  return false;
+}

@@ -1,0 +1,8 @@
+// Recursive calls use the callee's contract.
+int count(int n)
+//@requires 0 <= n;
+//@ensures \result == n;
+{
+  if (n == 0) return 0;
+  return count(n - 1) + 1;
+}

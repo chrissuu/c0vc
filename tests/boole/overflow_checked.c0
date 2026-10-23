@@ -1,0 +1,12 @@
+// args: --int-model=checked
+// With unbounded ints every operation that may overflow is an obligation.
+int twice(int x) {
+  return 2 * x;
+}
+
+int twice_small(int x)
+//@requires -1000 <= x && x <= 1000;
+//@ensures \result == x + x;
+{
+  return 2 * x;
+}

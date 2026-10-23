@@ -141,6 +141,7 @@ structure FunctionDef where
 
 inductive GDecl where
   | fdecl (retType : Tau) (fname : String) (params : List Param) (external : Bool)
+      (annotations : List MarkedAnno := [])
   | fdefn (fdefn : FunctionDef)
   | sdecl (name : String)
   | sdefn (name : String) (fields : List Field)
@@ -325,10 +326,10 @@ def ppFunctionDef (fdefn : FunctionDef) : String :=
     s!"{ppAnnos fdefn.annotations}\n{ppTau fdefn.retType} {fdefn.fname}{ppParams fdefn.params} \{\n{ppStms fdefn.body}}"
 
 def ppGDecl : GDecl → String
-  | .fdecl retType fname params true =>
-      s!"external {ppTau retType} {fname}{ppParams params};"
-  | .fdecl retType fname params false =>
-      s!"{ppTau retType} {fname}{ppParams params};"
+  | .fdecl retType fname params true annotations =>
+      s!"{ppAnnos annotations}\nexternal {ppTau retType} {fname}{ppParams params};"
+  | .fdecl retType fname params false annotations =>
+      s!"{ppAnnos annotations}\n{ppTau retType} {fname}{ppParams params};"
   | .fdefn fdefn => ppFunctionDef fdefn
   | .sdecl name =>
       s!"struct {name};"
@@ -426,7 +427,7 @@ def ppFunctionDefRaw (fdefn : FunctionDef) : String :=
   s!"FunctionDef({ppTau fdefn.retType}, {fdefn.fname}, ({paramsStr}), [\n{annotationsStr}\n  ], [\n{bodyStr}\n  ])"
 
 def ppGDeclRaw : GDecl → String
-  | .fdecl retType fname params external =>
+  | .fdecl retType fname params external _ =>
       let paramsStr := String.intercalate ", " (params.map ppParam)
       s!"Fdecl({ppTau retType}, {fname}, external={external}, ({paramsStr}))"
   | .fdefn fdefn => ppFunctionDefRaw fdefn

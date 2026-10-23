@@ -1,5 +1,13 @@
 import C0VC.StrataBoole.IR
 
+/-!
+StrataBoole.Codegen
+
+Renders the Boole IR as StrataBoole source text. Every compound expression is
+parenthesized, so the output does not depend on Boole operator precedence.
+C0 ints are rendered according to the program's `IntModel`.
+-/
+
 namespace C0VC.StrataBoole.Codegen
 
 open C0VC.StrataBoole
@@ -18,234 +26,182 @@ private def parens (s : String) : String :=
 private def commaSep (xs : List String) : String :=
   String.intercalate ", " xs
 
-private def lines (xs : List String) : String :=
-  String.intercalate "\n" xs
+private def twoPow32 : Int := 4294967296
 
-private def booleKeywords : List String :=
-  [ "program"
-  , "Boole"
-  , "type"
-  , "function"
-  , "var"
-  , "procedure"
-  , "returns"
-  , "spec"
-  , "requires"
-  , "ensures"
-  , "modifies"
-  , "free"
-  , "assert"
-  , "assume"
-  , "havoc"
-  , "call"
-  , "if"
-  , "then"
-  , "else"
-  , "while"
-  , "invariant"
-  , "for"
-  , "to"
-  , "downto"
-  , "by"
-  , "decreases"
-  , "let"
-  , "in"
-  , "old"
-  , "result"
-  , "true"
-  , "false"
-  , "int"
-  , "bool"
-  , "Map"
-  ]
-
-private def isBooleKeyword (name : String) : Bool :=
-  booleKeywords.contains name
-
-private def ppIdent (name : String) : String :=
-  if isBooleKeyword name then
-    "_c0_" ++ name
-  else
-    name
-
-private def boolePrelude : String :=
-  lines
-    [ "program Boole;"
-    , ""
-    ]
-
-private def booleHeapPrelude : String :=
-  lines
-    [ "program Boole;"
-    , ""
-    , "type Ref := int;"
-    , "type HeapInt := Map Ref (Map int int);"
-    , "type HeapBool := Map Ref (Map int bool);"
-    , "type HeapRef := Map Ref (Map int Ref);"
-    , ""
-    , "var nextRef : Ref;"
-    , "var alloc : Map int bool;"
-    , "var len : Map int int;"
-    , "var hInt : HeapInt;"
-    , "var hBool : HeapBool;"
-    , "var hRef : HeapRef;"
-    , ""
-    ]
-
-private def heapGlobals : List String :=
-  [ "nextRef", "alloc", "len", "hInt", "hBool", "hRef" ]
-
-private def isHeapGlobal (name : String) : Bool :=
-  heapGlobals.contains name
-
-partial def tauNeedsHeapPrelude : Tau → Bool
-  | .ref | .heapRef => true
-  | .map key val => tauNeedsHeapPrelude key || tauNeedsHeapPrelude val
-  | .int | .bool | .void => false
-
-mutual
-partial def exprNeedsHeapPrelude : Expr → Bool
-  | .var name => isHeapGlobal name
-  | .null => true
-  | .intLit _ | .boolLit _ => false
-  | .binop _ lhs rhs => exprNeedsHeapPrelude lhs || exprNeedsHeapPrelude rhs
-  | .ite test thenVal elseVal =>
-      exprNeedsHeapPrelude test || exprNeedsHeapPrelude thenVal || exprNeedsHeapPrelude elseVal
-  | .call _ args => args.any exprNeedsHeapPrelude
-  | .mapGet map key => exprNeedsHeapPrelude map || exprNeedsHeapPrelude key
-
-partial def lvalueNeedsHeapPrelude : LValue → Bool
-  | .var name => isHeapGlobal name
-  | .mapSlot map key => exprNeedsHeapPrelude map || exprNeedsHeapPrelude key
-end
-
-partial def stmtNeedsHeapPrelude : Stmt → Bool
-  | .declare _ tau => tauNeedsHeapPrelude tau
-  | .assign lhs rhs => lvalueNeedsHeapPrelude lhs || exprNeedsHeapPrelude rhs
-  | .assert expr => exprNeedsHeapPrelude expr
-  | .ifElse test thenBody elseBody =>
-      exprNeedsHeapPrelude test || thenBody.any stmtNeedsHeapPrelude || elseBody.any stmtNeedsHeapPrelude
-  | .whileLoop test invariants body =>
-      exprNeedsHeapPrelude test || invariants.any exprNeedsHeapPrelude || body.any stmtNeedsHeapPrelude
-
-private def specNeedsHeapPrelude : Spec → Bool
-  | .requires expr | .ensures expr => exprNeedsHeapPrelude expr
-
-private def procNeedsHeapPrelude (proc : Procedure) : Bool :=
-  proc.params.any (fun (tau, _) => tauNeedsHeapPrelude tau) ||
-  proc.ret.any (fun (tau, _) => tauNeedsHeapPrelude tau) ||
-  proc.specs.any specNeedsHeapPrelude ||
-  proc.body.any (fun body => body.any stmtNeedsHeapPrelude)
-
-private def programNeedsHeapPrelude (program : Program) : Bool :=
-  program.procedures.any procNeedsHeapPrelude
-
-partial def ppTau : Tau → String
-  | .int => "int"
+partial def ppTau (model : IntModel) : Tau → String
+  | .int => if model == .bv32 then "bv W32" else "int"
   | .bool => "bool"
-  | .void => "void"
-  | .ref => "Ref"
-  | .heapRef => "HeapRef"
-  | .map key val => s!"Map {ppTau key} {ppTau val}"
+  | .ref | .math => "int"
+  | .string => "C0String"
+  | .map key val => s!"Map {ppTauArg model key} {ppTauArg model val}"
+where
+  ppTauArg (model : IntModel) (tau : Tau) : String :=
+    let s := ppTau model tau
+    if s.contains ' ' then parens s else s
 
-private def ppBinOp : BinOp → String
-  | .plus => "+"
+private def ppMathLit (n : Int) : String :=
+  if n < 0 then parens s!"-{n.natAbs}" else toString n
+
+private def ppIntLit (model : IntModel) (n : Int) : String :=
+  match model with
+  | .bv32 => s!"bv\{32}({n % twoPow32})"
+  | .checked => ppMathLit n
+
+private def bvArithOp : ArithOp → String
+  | .add => "+"
   | .sub => "-"
   | .mul => "*"
-  | .div => "div"
-  | .mod => "mod"
-  | .lt => "<"
-  | .lte => "<="
-  | .gt => ">"
-  | .gte => ">="
-  | .eq => "=="
-  | .neq => "!="
+  | .div => "sdiv"
+  | .mod => "smod"
   | .bitAnd => "&"
-  | .xor => "^"
   | .bitOr => "|"
+  | .xor => "^"
   | .shl => "<<"
-  | .shr => ">>"
+  | .shr => "ashr"
 
-mutual
-partial def ppExpr : Expr → String
-  | .var name => ppIdent name
-  | .intLit val => toString val
+private def mathArithOp : ArithOp → String
+  | .add => "+"
+  | .sub => "-"
+  | .mul => "*"
+  | _ => "div"
+
+private def mathCmpOp : CmpOp → String
+  | .lt => "<"
+  | .le => "<="
+  | .gt => ">"
+  | .ge => ">="
+
+private def bvCmpOp : CmpOp → String
+  | .lt => "slt"
+  | .le => "sle"
+  | .gt => "sgt"
+  | .ge => "sge"
+
+private def binary (lhs op rhs : String) : String :=
+  parens s!"{lhs} {op} {rhs}"
+
+/-- C0 division truncates toward zero; Boole `div` on `int` is Euclidean. -/
+private def truncDiv (x y : String) : String :=
+  let neg (s : String) := parens s!"-{s}"
+  s!"(if ({x} >= 0) then (if ({y} >= 0) then ({x} div {y}) else {neg s!"({x} div {neg y})"}) " ++
+  s!"else (if ({y} >= 0) then {neg s!"({neg x} div {y})"} else ({neg x} div {neg y})))"
+
+partial def ppExpr (model : IntModel) : Expr → String
+  | .var name => name
+  | .intLit n => ppIntLit model n
+  | .mathLit n => ppMathLit n
   | .boolLit true => "true"
   | .boolLit false => "false"
   | .null => "0"
-  | .binop op lhs rhs => parens s!"{ppExpr lhs} {ppBinOp op} {ppExpr rhs}"
-  | .ite test thenVal elseVal => s!"(if {ppExpr test} then {ppExpr thenVal} else {ppExpr elseVal})"
-  | .call fname args => s!"{ppIdent fname}({commaSep (args.map ppExpr)})"
-  | .mapGet map key => s!"{ppExpr map}[{ppExpr key}]"
+  | .arith op lhs rhs =>
+      let l := ppExpr model lhs
+      let r := ppExpr model rhs
+      match model, op with
+      | .bv32, _ => binary l (bvArithOp op) r
+      | .checked, .div => truncDiv l r
+      | .checked, .mod => binary l "-" (binary r "*" (truncDiv l r))
+      | .checked, .add | .checked, .sub | .checked, .mul => binary l (mathArithOp op) r
+      | .checked, _ => s!"as_sint({binary s!"as_bv32({l})" (bvArithOp op) s!"as_bv32({r})"})"
+  | .cmp op lhs rhs =>
+      let opText := if model == .bv32 then bvCmpOp op else mathCmpOp op
+      binary (ppExpr model lhs) opText (ppExpr model rhs)
+  | .mathArith op lhs rhs => binary (ppExpr model lhs) (mathArithOp op) (ppExpr model rhs)
+  | .mathCmp op lhs rhs => binary (ppExpr model lhs) (mathCmpOp op) (ppExpr model rhs)
+  | .eq lhs rhs => binary (ppExpr model lhs) "==" (ppExpr model rhs)
+  | .neq lhs rhs => binary (ppExpr model lhs) "!=" (ppExpr model rhs)
+  | .and lhs rhs => binary (ppExpr model lhs) "&&" (ppExpr model rhs)
+  | .or lhs rhs => binary (ppExpr model lhs) "||" (ppExpr model rhs)
+  | .implies lhs rhs => binary (ppExpr model lhs) "==>" (ppExpr model rhs)
+  -- `!` binds tighter than map indexing in Boole, so its operand is parenthesized.
+  | .not e => parens s!"!({ppExpr model e})"
+  | .ite test thenVal elseVal =>
+      parens s!"if {ppExpr model test} then {ppExpr model thenVal} else {ppExpr model elseVal}"
+  | .mapGet map key => s!"{ppExpr model map}[{ppExpr model key}]"
+  | .old e => parens s!"old {ppExpr model e}"
+  | .forall binders body =>
+      let bs := commaSep (binders.map fun (name, tau) => s!"{name} : {ppTau model tau}")
+      parens s!"forall {bs} :: {ppExpr model body}"
 
-partial def ppLValue : LValue → String
-  | .var name => ppIdent name
-  | .mapSlot map key => s!"{ppExpr map}[{ppExpr key}]"
-end
+private def ppLValue (model : IntModel) : LValue → String
+  | .var name => name
+  | .mapSlot map key => s!"{ppExpr model map}[{ppExpr model key}]"
 
-private def ppSpec : Spec → String
-  | .requires e => s!"  requires {ppExpr e};"
-  | .ensures e => s!"  ensures {ppExpr e};"
+private def ppLabel : Option String → String
+  | some label => s!"[{label}]: "
+  | none => ""
 
-private def ppModifies (names : List String) : String :=
-  s!"  modifies {commaSep (names.map ppIdent)};"
-
-partial def ppStm (level : Nat) : Stmt → List String
+partial def ppStm (model : IntModel) (level : Nat) : Stmt → List String
   | .declare name tau =>
-      [indent level s!"var {ppIdent name} : {ppTau tau};"]
+      [indent level s!"var {name} : {ppTau model tau};"]
   | .assign lhs rhs =>
-      [indent level s!"{ppLValue lhs} := {ppExpr rhs};"]
-  | .assert expr =>
-      [indent level s!"assert {ppExpr expr};"]
+      [indent level s!"{ppLValue model lhs} := {ppExpr model rhs};"]
+  | .check label expr =>
+      let e := ppExpr model expr
+      [indent level s!"assert [{label}]: {e};", indent level s!"assume {e};"]
+  | .assume expr =>
+      [indent level s!"assume {ppExpr model expr};"]
+  | .havoc name =>
+      [indent level s!"havoc {name};"]
   | .ifElse test thenBody elseBody =>
-      let thenLines := List.flatten (thenBody.map (ppStm (level + 1)))
-      let elseLines := List.flatten (elseBody.map (ppStm (level + 1)))
-      let head := indent level s!"if ({ppExpr test}) \{"
+      let thenLines := thenBody.flatMap (ppStm model (level + 1))
+      let elseLines := elseBody.flatMap (ppStm model (level + 1))
+      let head := indent level s!"if ({ppExpr model test}) \{"
       if elseLines.isEmpty then
         [head] ++ thenLines ++ [indent level "}"]
       else
         [head] ++ thenLines ++ [indent level "} else {"] ++ elseLines ++ [indent level "}"]
   | .whileLoop test invariants body =>
-      let invText :=
-        match invariants.map (fun inv => s!"invariant {ppExpr inv}") with
-        | [] => ""
-        | invs => " " ++ String.intercalate " " invs
-      let bodyLines := List.flatten (body.map (ppStm (level + 1)))
-      [indent level s!"while ({ppExpr test}){invText} \{"] ++ bodyLines ++ [indent level "}"]
+      let invLines := invariants.map fun (label, inv) =>
+        indent (level + 1) s!"invariant [{label}]: {ppExpr model inv}"
+      let bodyLines := body.flatMap (ppStm model (level + 1))
+      [indent level s!"while ({ppExpr model test})"] ++ invLines ++
+        [indent level "{"] ++ bodyLines ++ [indent level "}"]
+  | .call lhs fname args =>
+      let target := match lhs with
+        | some name => s!"{name} := "
+        | none => ""
+      [indent level s!"call {target}{fname}({commaSep (args.map (ppExpr model))});"]
+  | .block label body =>
+      [indent level s!"{label}: \{"] ++ body.flatMap (ppStm model (level + 1)) ++ [indent level "}"]
+  | .exit label =>
+      [indent level s!"exit {label};"]
 
-private def ppParams (params : List (Tau × String)) : String :=
-  commaSep (params.map fun (tau, name) => s!"{ppIdent name} : {ppTau tau}")
+private def ppSpec (model : IntModel) (spec : Spec) : String :=
+  let free := if spec.free then "free " else ""
+  let kind := match spec.kind with
+    | .requires => "requires"
+    | .ensures => "ensures"
+  s!"  {free}{kind} {ppLabel spec.label}{ppExpr model spec.expr};"
 
-private def ppReturn : Option (Tau × String) → String
+private def ppParams (model : IntModel) (params : List (Tau × String)) : String :=
+  commaSep (params.map fun (tau, name) => s!"{name} : {ppTau model tau}")
+
+private def ppReturn (model : IntModel) : Option (Tau × String) → String
   | none => "returns ()"
-  | some (tau, name) => s!"returns ({ppIdent name} : {ppTau tau})"
+  | some (tau, name) => s!"returns ({name} : {ppTau model tau})"
 
-private def ppProcedure (proc : Procedure) : String :=
+private def ppProcedure (model : IntModel) (proc : Procedure) : String :=
+  let specLines := proc.specs.map (ppSpec model)
+  let modifiesLines :=
+    if proc.modifies.isEmpty then [] else [s!"  modifies {commaSep proc.modifies};"]
+  let allSpecLines := specLines ++ modifiesLines
   let specBlock :=
-    let specLines := proc.specs.map ppSpec
-    let modifiesLines :=
-      if proc.modifies.isEmpty then
-        []
-      else
-        [ppModifies proc.modifies]
-    let allSpecLines := specLines ++ modifiesLines
-    if allSpecLines.isEmpty then
-      ""
-    else
-      "\nspec {\n" ++ String.intercalate "\n" allSpecLines ++ "\n}"
+    if allSpecLines.isEmpty then ""
+    else "\nspec {\n" ++ String.intercalate "\n" allSpecLines ++ "\n}"
+  let header := s!"procedure {proc.name}({ppParams model proc.params}) {ppReturn model proc.ret}{specBlock}"
   match proc.body with
-  | none =>
-      s!"procedure {ppIdent proc.name}({ppParams proc.params}) {ppReturn proc.ret}{specBlock};"
+  | none => header ++ ";"
   | some body =>
-      let bodyText := String.intercalate "\n" (List.flatten (body.map (ppStm 1)))
-      s!"procedure {ppIdent proc.name}({ppParams proc.params}) {ppReturn proc.ret}{specBlock}\n\{\n{bodyText}\n};"
+      let bodyText := String.intercalate "\n" (body.flatMap (ppStm model 1))
+      s!"{header}\n\{\n{bodyText}\n};"
 
 def run (program : Program) : ProgramText :=
-  let prelude :=
-    if programNeedsHeapPrelude program then
-      booleHeapPrelude
-    else
-      boolePrelude
-  prelude ++ "\n" ++ String.intercalate "\n\n" (program.procedures.map ppProcedure) ++ "\n"
+  let model := program.intModel
+  let typeDecls := if program.usesStrings then ["type C0String;", ""] else []
+  let globals := program.globals.map fun (name, tau) => s!"var {name} : {ppTau model tau};"
+  let header := ["program Boole;", ""] ++ typeDecls ++
+    (if globals.isEmpty then [] else globals ++ [""])
+  String.intercalate "\n" header ++ "\n" ++
+    String.intercalate "\n\n" (program.procedures.map (ppProcedure model)) ++ "\n"
 
 end C0VC.StrataBoole.Codegen

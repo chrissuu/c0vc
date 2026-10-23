@@ -63,7 +63,7 @@ def collectFEnv (program : Program) : FEnv :=
   program.foldl
     (fun env gdecl =>
       match gdecl with
-      | .fdecl retType fname params _ =>
+      | .fdecl retType fname params _ _ =>
           env.insert fname { retType, fname, params }
       | .fdefn fdefn =>
           env.insert fdefn.fname { retType := fdefn.retType, fname := fdefn.fname, params := fdefn.params }
@@ -329,8 +329,22 @@ def tcFunctionSignature (retType : Tau) (params : List Param) : Except String Un
   let _ ← tcReturnType retType
   tcParamTypesSmall params
 
+/-- Prefix an error message with a source location, unless it already has one. -/
+def locateError (span? : Option C0VC.Utils.SrcSpan.SrcSpan) (msg : String) : String :=
+  match span? with
+  | some span =>
+      if msg.startsWith s!"{span.fileName}:" then msg
+      else s!"{span.fileName}:{span.startLoc.line}:{span.startLoc.col}: {msg}"
+  | none => msg
+
 mutual
 partial def tcExpr (senv : SEnv) (fenv : FEnv) (resultType : Option Tau) (mexpr : MarkedExpr) (venv : VEnv) :
+    Except String C0VC.TypedAst.TypedExpr :=
+  match tcExprCore senv fenv resultType mexpr venv with
+  | .ok te => .ok { te with span := mexpr.span <|> te.span }
+  | .error msg => .error (locateError mexpr.span msg)
+
+partial def tcExprCore (senv : SEnv) (fenv : FEnv) (resultType : Option Tau) (mexpr : MarkedExpr) (venv : VEnv) :
     Except String C0VC.TypedAst.TypedExpr := do
   match mexpr.node with
   | .var name =>
@@ -443,6 +457,12 @@ partial def tcExpr (senv : SEnv) (fenv : FEnv) (resultType : Option Tau) (mexpr 
     | _ => .error "array access operand must have array type"
 
 partial def tcLValue (senv : SEnv) (fenv : FEnv) (resultType : Option Tau) (mlv : MarkedLValue) (venv : VEnv) :
+    Except String C0VC.TypedAst.TypedLValue :=
+  match tcLValueCore senv fenv resultType mlv venv with
+  | .ok tlv => .ok { tlv with span := mlv.span <|> tlv.span }
+  | .error msg => .error (locateError mlv.span msg)
+
+partial def tcLValueCore (senv : SEnv) (fenv : FEnv) (resultType : Option Tau) (mlv : MarkedLValue) (venv : VEnv) :
     Except String C0VC.TypedAst.TypedLValue := do
   match mlv.node with
   | .var name =>
@@ -567,7 +587,14 @@ partial def materializeAsopLValue (next : Nat) (tlv : C0VC.TypedAst.TypedLValue)
       wrapArr (.declare baseName arr.tau (some baseExpr) (.declare indexName .int (some index) body))
     (next' + 2, wrap, tlv')
 
+mutual
 partial def tcMStm (senv : SEnv) (fenv : FEnv) (expectedRet : Tau) (mstm : MarkedStm) (venv : VEnv) :
+    Except String (C0VC.TypedAst.Stm × VEnv) :=
+  match tcMStmCore senv fenv expectedRet mstm venv with
+  | .ok result => .ok result
+  | .error msg => .error (locateError mstm.span msg)
+
+partial def tcMStmCore (senv : SEnv) (fenv : FEnv) (expectedRet : Tau) (mstm : MarkedStm) (venv : VEnv) :
     Except String (C0VC.TypedAst.Stm × VEnv) := do
   match mstm.node with
   | .assign lhs val =>
@@ -699,6 +726,8 @@ partial def tcMStm (senv : SEnv) (fenv : FEnv) (expectedRet : Tau) (mstm : Marke
     let ta ← tcAnno senv fenv (some expectedRet) a venv
     .ok (.annotation ta, venv)
 
+end
+
 partial def typedStmtGuaranteedReturn (mstm : C0VC.TypedAst.Stm) : Bool :=
   match mstm with
   | .ret _ => true
@@ -762,10 +791,12 @@ def tcFunctionDef (structs : List (String × List Field)) (senv : SEnv) (fenv : 
     .error "Could not find a return statement in function definition"
 
 def tcGDecl (structs : List (String × List Field)) (senv : SEnv) (fenv : FEnv) : GDecl → Except String (Option C0VC.TypedAst.FunctionDef)
-  | .fdecl retType fname params external => do
+  | .fdecl retType fname params external annotations => do
       let _ ← tcFunctionSignature retType params
       if external then
-        .ok (some { retType, fname, params, body := [], annotations := [], structs := structs, external := true })
+        let venv := params.foldl (fun env (varType, name) => insertVEnv env name varType true) {}
+        let tannotations ← annotations.mapM (fun anno => tcAnno senv fenv (some retType) anno venv)
+        .ok (some { retType, fname, params, body := [], annotations := tannotations, structs := structs, external := true })
       else
         .ok none
   | .fdefn fdefn => do
@@ -778,6 +809,69 @@ def tcStructDeclFields (visibleSenv : SEnv) (name : String) (fields : List Field
   fields.forM (fun (tau, fieldName) => do
     let _ ← tcValueTypeValid tau s!"field {fieldName} of struct {name}"
     tcStructFieldTypeKnown visibleSenv tau)
+
+/--
+Merge prototypes into their definitions. C0 checks the contracts of every
+declaration of a function, so a prototype's annotations are added to the
+definition. Functions that are only declared (header functions) keep a single
+external entry carrying the annotations of all of their declarations.
+-/
+def mergeDeclarations (program : C0VC.TypedAst.Program) : C0VC.TypedAst.Program :=
+  let declAnnos : Std.HashMap String (List C0VC.TypedAst.Anno) :=
+    program.foldl
+      (fun acc f =>
+        if f.external then acc.insert f.fname ((acc.getD f.fname []) ++ f.annotations) else acc)
+      {}
+  let defined : Std.HashSet String :=
+    program.foldl (fun acc f => if f.external then acc else acc.insert f.fname) {}
+  let (keptRev, _) := program.foldl
+    (fun (acc, seen) (f : C0VC.TypedAst.FunctionDef) =>
+      if f.external then
+        if defined.contains f.fname || seen.contains f.fname then (acc, seen)
+        else ({ f with annotations := declAnnos.getD f.fname [] } :: acc, seen.insert f.fname)
+      else
+        ({ f with annotations := declAnnos.getD f.fname [] ++ f.annotations } :: acc, seen.insert f.fname))
+    (([] : List C0VC.TypedAst.FunctionDef), ({} : Std.HashSet String))
+  keptRev.reverse
+
+partial def typedExprVars (e : C0VC.TypedAst.TypedExpr) : List String :=
+  match e.node with
+  | .var name => [name]
+  | .binop _ l r => typedExprVars l ++ typedExprVars r
+  | .ternary c t f => typedExprVars c ++ typedExprVars t ++ typedExprVars f
+  | .call _ args => args.flatMap typedExprVars
+  | .length a | .deref a | .dot a _ | .arrow a _ => typedExprVars a
+  | .allocArray _ size => typedExprVars size
+  | .arrAccess a i => typedExprVars a ++ typedExprVars i
+  | _ => []
+
+partial def typedStmAssignedVars : C0VC.TypedAst.Stm → List String
+  | .assign lhs _ =>
+      match lhs.node with
+      | .var name => [name]
+      | _ => []
+  | .ifLit _ thenBranch elseBranch => typedStmAssignedVars thenBranch ++ typedStmAssignedVars elseBranch
+  | .whileLit _ body => typedStmAssignedVars body
+  | .seq first rest => typedStmAssignedVars first ++ typedStmAssignedVars rest
+  | .declare _ _ _ body => typedStmAssignedVars body
+  | _ => []
+
+/--
+"The body of a function may not assign to any variable that occurs in an
+@ensures clause" (C0 reference, section 13.1). Checked after prototypes are
+merged, so the contracts of every declaration are covered.
+-/
+def tcEnsuresNotAssigned (f : C0VC.TypedAst.FunctionDef) : Except String Unit := do
+  let assigned := f.body.flatMap typedStmAssignedVars
+  for anno in f.annotations do
+    match anno with
+    | .ensures e =>
+        match (typedExprVars e).find? assigned.contains with
+        | some name =>
+            throw (locateError e.span
+              s!"{f.fname} assigns {name}, which occurs in an @ensures clause; C0 does not allow assigning to variables in a postcondition")
+        | none => pure ()
+    | _ => pure ()
 
 def tcProgramOrdered
     (structs : List (String × List Field))
@@ -797,10 +891,13 @@ def tcProgramOrdered
           | some typed => .ok (typed :: typedAcc, visibleSenv)
           | none => .ok (typedAcc, visibleSenv))
     ([], {})
-  .ok typedRev.reverse
+  let merged := mergeDeclarations typedRev.reverse
+  merged.forM tcEnsuresNotAssigned
+  .ok merged
 
-def run (program : Program) : Except String C0VC.TypedAst.Program := do
-  let _ ← tcMainFn program
+def run (program : Program) (requireMain : Bool := true) : Except String C0VC.TypedAst.Program := do
+  if requireMain then
+    tcMainFn program
   let senv ← collectSEnv program
   let _ ← checkStructsAcyclic senv
   let structs := collectStructs program

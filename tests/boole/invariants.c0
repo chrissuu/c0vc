@@ -1,0 +1,25 @@
+// A loop invariant that the body does not preserve.
+int count_up(int n)
+//@requires 0 <= n && n < 1000;
+//@ensures \result == n;
+{
+  int i = 0;
+  while (i < n)
+  //@loop_invariant 0 <= i && i <= n;
+  {
+    i++;
+  }
+  return i;
+}
+
+int broken(int n)
+//@requires 0 <= n && n < 1000;
+{
+  int i = 0;
+  while (i < n)
+  //@loop_invariant i == 0;
+  {
+    i++;
+  }
+  return i;
+}

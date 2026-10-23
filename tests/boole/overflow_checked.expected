@@ -1,0 +1,2 @@
+overflow_checked.c0:4:10: error: arithmetic may overflow [overflow_L4C10]
+overflow_checked.c0: 2 of 3 proof obligations verified

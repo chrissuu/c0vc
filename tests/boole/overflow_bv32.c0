@@ -1,0 +1,14 @@
+// C0 ints wrap: x + 1 can be negative when x == INT_MAX.
+int succ(int x)
+//@requires x > 0;
+//@ensures \result > 0;
+{
+  return x + 1;
+}
+
+int succ_bounded(int x)
+//@requires 0 < x && x < 1000;
+//@ensures \result > 0;
+{
+  return x + 1;
+}

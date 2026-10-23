@@ -1,0 +1,7 @@
+// C0 reference 13.1: the body may not assign a variable that occurs in @ensures.
+int dec(int n)
+//@ensures \result == n;
+{
+  n = n - 1;
+  return n;
+}

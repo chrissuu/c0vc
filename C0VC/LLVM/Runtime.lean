@@ -21,7 +21,7 @@ def name : Fn → String
   | .checkedMod => "__c0vc_checked_mod"
   | .checkedShl => "__c0vc_checked_shl"
   | .checkedShr => "__c0vc_checked_shr"
-  | .assert => "_c0_assert"
+  | .assert => "__c0vc_assert"
   | .error => "__c0vc_error"
   | .alloc => "__c0vc_alloc"
   | .allocArray => "__c0vc_alloc_array"
