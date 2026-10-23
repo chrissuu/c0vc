@@ -1,0 +1,3 @@
+int popcount(int x)
+//@ensures 0 <= \result && \result <= 32;
+;

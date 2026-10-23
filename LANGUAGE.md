@@ -7,3 +7,5 @@ This document notes the main quirks of the C0 language. Some parts are quoted ex
 2.  "The body of a function may not assign to any variable that occurs in an @ensures clause. This means that the function contract can be correctly interpreted without knowing the body of the function." (C0 reference, section 13.1.) The typechecker enforces this, including for `@ensures` clauses on prototypes.
 
 3.  `\length` may only appear in contracts, as in C0.
+
+4.  "In annotations, the @ character is treated as whitespace." (C0 reference, section 14.) Multi-line annotations can start continuation lines with `@`.

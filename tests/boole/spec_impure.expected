@@ -1,0 +1,1 @@
+spec_impure.c0:10:31: contracts can only call pure functions, but bump writes memory or allocates, directly or through a call

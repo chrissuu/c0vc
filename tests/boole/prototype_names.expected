@@ -1,0 +1,2 @@
+prototype_names.c0:14:10: error: precondition of clamp (declared at line 3) may not hold [precondition_L14C10]
+prototype_names.c0: 2 of 3 proof obligations verified
