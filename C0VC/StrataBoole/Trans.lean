@@ -610,18 +610,6 @@ end
 
 /-! ## Statements -/
 
-/-- Split the loop invariants that lead a loop body from the rest of the body. -/
-private partial def peelInvariants : CStm → List CExpr × CStm
-  | .annotation (.loopInvariant inv) => ([inv], .nop)
-  | .seq first rest =>
-      let (invs, first') := peelInvariants first
-      match first' with
-      | .nop =>
-          let (moreInvs, rest') := peelInvariants rest
-          (invs ++ moreInvs, rest')
-      | _ => (invs, .seq first' rest)
-  | stm => ([], stm)
-
 private partial def declaredIn : Stmt → List String
   | .declare name _ => [name]
   | .ifElse _ t f => t.flatMap declaredIn ++ f.flatMap declaredIn
@@ -737,7 +725,7 @@ partial def lowerAssign (lhs : CLValue) (val : CExpr) : M (List Stmt) := do
       pure (flush pa ++ flush pv ++ [.assign (heapSlot heap ref elem) v])
 
 partial def lowerWhile (usesHeap : Bool) (test : CExpr) (body : CStm) : M (List Stmt) := do
-  let (invs, rest) := peelInvariants body
+  let (invs, rest) := body.peelInvariants
   let invariants ← withSpec do
     invs.flatMapM fun inv => do
       let (pre, e) ← lowerExpr inv

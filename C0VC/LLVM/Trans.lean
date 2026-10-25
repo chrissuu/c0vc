@@ -60,25 +60,6 @@ def lookupFieldIndex (senv : SEnv) (structName field : String) : Nat :=
   | none => panic! s!"[Error] struct {structName} used before declaration"
 
 
-def translateBinOp (op: C0VC.TypedAst.BinOp) : Tree.BinOp :=
-  match op with
-  | .plus => .plus
-  | .sub => .sub
-  | .mul => .mul
-  | .div => .div
-  | .mod => .mod
-  | .lt => .lt
-  | .lte => .lte
-  | .gt => .gt
-  | .gte => .gte
-  | .eq => .eq
-  | .neq => .neq
-  | .bitAnd => .bitAnd
-  | .xor => .xor
-  | .bitOr => .bitOr
-  | .shl => .shl
-  | .shr => .shr
-
 def exprAlreadyMaterialized : Tree.Expr → Bool
   | .const .. | .temp _ => true
   | _ => false
@@ -120,7 +101,7 @@ partial def translateExpr
       | .shr => .move tempRes (.runtimeCall .checkedShr [transLhs, transRhs])
 
       -- Assumes that binops input types are equal
-      | _ => .move tempRes (.binop (translateBinOp op) (translateTau lhs.tau) transLhs transRhs)
+      | _ => .move tempRes (.binop op (translateTau lhs.tau) transLhs transRhs)
 
     (cmdsLhs ++ cmdsRhs ++ [cmd]
     , .temp tempRes
@@ -369,6 +350,14 @@ partial def translateStm
     )
 
   | .whileLit test body =>
+    -- Loop invariants (present with --dyn-check) are checked before every
+    -- evaluation of the condition, including the one that exits the loop.
+    let (invariants, body) := body.peelInvariants
+    let (cmdsInvs, env, tc, lc) := invariants.foldl
+      (fun (cmdsAcc, envAcc, tcAcc, lcAcc) inv =>
+        let (cmds, transInv, env', tc', lc') := translateExpr senv inv envAcc tcAcc lcAcc
+        (cmdsAcc ++ cmds ++ [.runtimeCall .assert [transInv]], env', tc', lc'))
+      ([], env, tc, lc)
     let (cmdsTest, transTest, env', tc', lc') := translateExpr senv test env tc lc
     let (cmdsBody, env'', tc'', lc'') := translateStm senv ensures body env' tc' lc'
 
@@ -378,6 +367,7 @@ partial def translateStm
 
     ([ .goto labelGuard
      , .label labelGuard]
+    ++ cmdsInvs
     ++ cmdsTest
     ++ [ .ite transTest labelBody labelDone
        , .label labelBody]
@@ -492,8 +482,6 @@ def translateFunctionDef (fdefn : C0VC.TypedAst.FunctionDef) : Tree.FunctionDef 
   let (temps, tc) := Temp.bumpAndCreateK 0 params.length
   let paramsTemps := List.zip params temps
   let (params', seededEnv) := List.foldr
-    -- TODO: i don't really like this, since it assumes that in the downstream pass,
-    -- function args will preserve temp.name and also explicitly emit %temp.name
     (λ ((tau, varName), temp) (paramsAcc, envAcc) => ((translateTau tau, temp)::paramsAcc, envAcc.insert varName temp))
     ([], {})
     paramsTemps

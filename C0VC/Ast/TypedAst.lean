@@ -144,6 +144,22 @@ partial def Stm.assignedVars : Stm → List String
   | .declare _ _ _ body => body.assignedVars
   | _ => []
 
+/--
+Split a loop body into the loop invariants that lead it and the rest. C0
+writes invariants between the loop header and the body, and the parser keeps
+them as the body's leading annotation statements.
+-/
+partial def Stm.peelInvariants : Stm → List TypedExpr × Stm
+  | .annotation (.loopInvariant inv) => ([inv], .nop)
+  | .seq first rest =>
+      let (invs, first') := first.peelInvariants
+      match first' with
+      | .nop =>
+          let (moreInvs, rest') := rest.peelInvariants
+          (invs ++ moreInvs, rest')
+      | _ => (invs, .seq first' rest)
+  | stm => ([], stm)
+
 /-- Every expression a statement evaluates, including annotations and nested statements. -/
 partial def Stm.exprs : Stm → List TypedExpr
   | .assign lhs val =>

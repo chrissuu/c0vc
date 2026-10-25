@@ -32,6 +32,7 @@ structure CliConfig where
   dumpIrRaw     : Bool := false
   devNoRuntime  : Bool := false
   verify        : Bool := false
+  dynCheck      : Bool := false
   solver        : String := "z3"
   solverTimeout : Nat := 10
   intModel      : C0VC.StrataBoole.IntModel := .bv32
@@ -47,6 +48,7 @@ private def usage : String :=
     , "  -t, --typecheck-only   stop after typechecking"
     , "  -O LEVEL, --opt=LEVEL  optimization level"
     , "  --unsafe               omit runtime safety checks (LLVM)"
+    , "  -d, --dyn-check        check contracts at run time (LLVM), like cc0 -d"
     , ""
     , "verification (StrataBoole):"
     , "  --verify               verify the program and report failed obligations"
@@ -112,6 +114,8 @@ private def parseArgs : List String → CliConfig → Except String CliConfig
   | "--typecheck-only" :: rest, cfg => parseArgs rest { cfg with typecheckOnly := true }
   | "--unsafe" :: rest, cfg => parseArgs rest { cfg with unsafeMode := true }
   | "--verify" :: rest, cfg => parseArgs rest { cfg with verify := true }
+  | "-d" :: rest, cfg => parseArgs rest { cfg with dynCheck := true }
+  | "--dyn-check" :: rest, cfg => parseArgs rest { cfg with dynCheck := true }
   | "--dump-tokens" :: rest, cfg => parseArgs rest { cfg with dumpTokens := true }
   | "--dump-ast" :: rest, cfg => parseArgs rest { cfg with dumpAst := true }
   | "--dump-elab" :: rest, cfg => parseArgs rest { cfg with dumpElab := true }
@@ -164,8 +168,10 @@ private def runFrontend (cfg : CliConfig) (infile : String) : Stage (Option Fron
   let headers := (← cfg.libs.mapM parseProgramFile).flatten
   let source ← IO.FS.readFile infile
   let toBoole := cfg.emit == .boole
-  -- Only the Boole backend uses contracts; for LLVM, annotations are comments.
-  let lex := if toBoole then C0VC.Lexer.munchWithTypedefs else C0VC.Lexer.munchWithoutAnnotationsWithTypedefs
+  -- Contracts are used by the Boole backend and by LLVM with --dyn-check;
+  -- otherwise annotations are comments.
+  let keepAnnotations := toBoole || cfg.dynCheck
+  let lex := if keepAnnotations then C0VC.Lexer.munchWithTypedefs else C0VC.Lexer.munchWithoutAnnotationsWithTypedefs
   let tokens ← stage (lex (typedefAliases headers) infile source)
   dumpIf cfg.dumpTokens fun _ => C0VC.Token.Print.ppTokens tokens
   let program ← stage (C0VC.Parse.parseProgramFromTokens tokens)

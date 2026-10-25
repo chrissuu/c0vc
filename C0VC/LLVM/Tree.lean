@@ -7,6 +7,7 @@ Author(s):
 import C0VC.Utils.Temp
 import C0VC.Utils.Label
 import C0VC.LLVM.Runtime
+import C0VC.Ast.ElabbedAst
 
 namespace C0VC.LLVM.Tree
 
@@ -14,25 +15,8 @@ open C0VC.Utils.Temp
 open C0VC.Utils.Label
 open C0VC.LLVM.Runtime
 
--- TODO: maybe consider deduplicating this definition against AST.BinOp?
-inductive BinOp where
-  | plus
-  | sub
-  | mul
-  | div
-  | mod
-  | lt
-  | lte
-  | gt
-  | gte
-  | eq
-  | neq
-  | bitAnd
-  | xor
-  | bitOr
-  | shl
-  | shr
-deriving Inhabited
+/-- The Tree uses the source binary operators unchanged. -/
+abbrev BinOp := C0VC.ElabbedAst.BinOp
 
 inductive Tau where
   | int

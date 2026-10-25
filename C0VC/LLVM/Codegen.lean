@@ -587,18 +587,21 @@ def translateFdefn (cfg : Config) (fdefn : Tree.FunctionDef) (fenv : FEnv) : IR.
     , external := true }
   else
 
-    let seededTc := fdefn.args.length
+    -- Incoming arguments are named %arg{i}, separate from the %t{n} temps this
+    -- pass creates. Each is copied into a stack slot that the Tree's temp for
+    -- the parameter refers to.
+    let argName (i : Nat) : String := s!"arg{i}"
     let (stms, seededTEnv', tc') := List.foldl
-      (λ (stmsAcc, tenvAcc, tcAcc) (tau, temp) =>
+      (λ (stmsAcc, tenvAcc, tcAcc) ((tau, temp), i) =>
         let tau' := translateTau tau
         let (ptr, tc') := Temp.bumpAndCreate tcAcc
         let alloca : IR.Stm := .alloca (.ptr ptr) tau'
-        let store : IR.Stm := .store tau' (.var temp) (.ptr ptr)
+        let store : IR.Stm := .store tau' (.var (Temp.fromName (argName i))) (.ptr ptr)
         ( stmsAcc ++ [alloca, store]
         , tenvAcc.insert temp.name (TempInfo.mk ptr tau' true)
         , tc'))
-      ([], {}, seededTc)
-      fdefn.args
+      ([], {}, 0)
+      fdefn.args.zipIdx
 
     let (transCmds, _, _, _) :=
       List.foldl
@@ -617,7 +620,7 @@ def translateFdefn (cfg : Config) (fdefn : Tree.FunctionDef) (fenv : FEnv) : IR.
       | _ => false
     { fname := fdefn.fname
     , tau := translateTau fdefn.tau
-    , args := translateArgs fdefn.args
+    , args := fdefn.args.zipIdx.map fun ((tau, _), i) => (translateTau tau, argName i)
     , stms := transCmds.filter isAlloca ++ transCmds.filter (!isAlloca ·)
     , structs := structs
     , external := false }

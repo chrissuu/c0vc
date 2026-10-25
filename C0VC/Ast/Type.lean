@@ -839,6 +839,21 @@ def tcEnsuresNotAssigned (f : C0VC.TypedAst.FunctionDef) : Except String Unit :=
         | none => pure ()
     | _ => pure ()
 
+/--
+Annotations inside a function body must be `@assert`s, or `@loop_invariant`s
+directly after a loop header.
+-/
+partial def tcAnnotationPlacement : C0VC.TypedAst.Stm → Except String Unit
+  | .annotation (.requires e) => .error (locateError e.span "@requires can only annotate a function")
+  | .annotation (.ensures e) => .error (locateError e.span "@ensures can only annotate a function")
+  | .annotation (.loopInvariant e) =>
+      .error (locateError e.span "@loop_invariant must directly follow a loop header, as in `while (c) //@loop_invariant I; { ... }`")
+  | .whileLit _ body => tcAnnotationPlacement body.peelInvariants.2
+  | .ifLit _ t f => do tcAnnotationPlacement t; tcAnnotationPlacement f
+  | .seq a b => do tcAnnotationPlacement a; tcAnnotationPlacement b
+  | .declare _ _ _ body => tcAnnotationPlacement body
+  | _ => .ok ()
+
 def tcProgramOrdered
     (structs : List (String × List Field))
     (fenv : FEnv)
@@ -859,6 +874,7 @@ def tcProgramOrdered
     ([], {})
   let merged := mergeDeclarations typedRev.reverse
   merged.forM tcEnsuresNotAssigned
+  merged.forM fun f => f.body.forM tcAnnotationPlacement
   .ok merged
 
 def run (program : Program) (requireMain : Bool := true) : Except String C0VC.TypedAst.Program := do
