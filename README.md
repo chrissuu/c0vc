@@ -104,7 +104,7 @@ Known StrataBoole gaps include:
 
 - contracts calling functions that allocate, and recursive or loop-based spec
   functions other than the standard search loop (these stay uninterpreted)
-- framing finer than one heap map per cell type
+- framing finer than one heap map per struct field or array element type
 - `\hastag` and C1 `void*`
 - string contents (strings are opaque values)
-- slow symbolic execution for long runs of straight-line heap writes.
+- slow symbolic execution for long runs of straight-line writes to one map.

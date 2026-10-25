@@ -94,11 +94,12 @@ allocate, directly or through calls. Each pure function that a contract uses
 gets a Boole function that takes the heap maps as extra arguments,
 
 ```boole
-function is_sorted_fn(__len : ..., __hInt : ..., __hBool : ..., __hRef : ...,
-                      A : int, lo : bv W32, hi : bv W32) : bool { ... }
+function is_sorted_fn(__len : ..., __aInt : ..., A : int, lo : bv W32, hi : bv W32) : bool { ... }
 ```
 
-and a call in a contract applies it to the current heap. The callee's
+and a call in a contract applies it to the current heap. The function only
+takes the heap maps its C0 body reads, directly or through calls, so its value
+survives writes to other maps. The callee's
 preconditions become obligations at the contract's call site. The function's
 procedure gets the free postcondition `\result == is_sorted_fn(heap, args)`, so
 the result of a call in code agrees with the same call in a contract.
@@ -131,66 +132,69 @@ shifts check that the shift amount is in `[0, 32)`.
 
 ## Memory Model
 
-The heap prelude is:
+The heap is split into one map per kind of memory location (Burstall-Bornat):
 
 ```boole
 var nextRef : int;
 var len : Map int C0Int;
-var hInt : Map int (Map C0Int (Map int C0Int));
-var hBool : Map int (Map C0Int (Map int bool));
-var hRef : Map int (Map C0Int (Map int int));
-var zeroInt : Map C0Int (Map int C0Int);   // and zeroBool, zeroRef
+var aInt : Map int (Map C0Int C0Int);    // and aBool, aRef, aStr
+var h_node_next : Map int (Map C0Int int);   // one map per struct leaf field
+var zeroInt : Map C0Int C0Int;            // and zeroBool, zeroRef
 ```
 
-`C0Int` is `bv W32` or `int` depending on the int model. `hStr` and the opaque
+`C0Int` is `bv W32` or `int` depending on the int model. `aStr` and the opaque
 type `C0String` are added when the program uses strings.
 
 References are object ids: `0` is NULL and the allocated objects are exactly
 `0 < r < nextRef`. C0 has no pointer arithmetic, casts or deallocation, so a
-reference held by a C0 program is always NULL or allocated. Memory is addressed
-by object, element index and field offset:
+reference held by a C0 program is always NULL or allocated, and an object is
+only ever accessed at its own type. Cells are addressed by map, object and
+element index:
 
 ```text
-*p        => hT[p][0][0]
-a[i]      => hT[a][i][0]
-p->f      => hT[p][0][offset(S, f)]
-a[i].f    => hT[a][i][offset(S, f)]
-\length(a) => len[a]
+*p          => aT[p][0]
+a[i]        => aT[a][i]
+p->f        => h_S_f[p][0]
+a[i].f      => h_S_f[a][i]
+p->in.a     => h_S_in_a[p][0]      (nested value structs are flattened)
+\length(a)  => len[a]
 ```
 
-`hT` is chosen by the type of the cell: `hInt` for `int` and `char`, `hBool` for
-`bool`, `hRef` for pointers and arrays, `hStr` for strings. Nested value structs
-are flattened, so `offset` counts the scalar leaf fields that come before `f`.
-The default array is NULL with length 0.
+`aT` is chosen by the element type: `aInt` for `int` and `char`, `aBool` for
+`bool`, `aRef` for pointers and arrays, `aStr` for strings. Each scalar leaf
+field of each struct `S` has its own map `h_S_path`. The default array is NULL
+with length 0.
 
 Checks: dereferences and field accesses through pointers check `p != 0`; array
 accesses check `0 <= i && i < len[a]` (this also rejects the NULL array).
 
-Allocation takes a fresh id and zero-initializes the cells:
+Allocation takes a fresh id and zero-initializes the maps of its cells:
 
 ```boole
 __alloc := nextRef;
 nextRef := (nextRef + 1);
 len[__alloc] := n;
-hInt[__alloc] := zeroInt;
+h_node_val[__alloc] := zeroInt;
+h_node_next[__alloc] := zeroRef;
 ```
 
 ### Well-formedness and framing
 
 Every procedure assumes, through free `requires`, that the heap is well formed:
 `nextRef > 0`, `len[0] == 0`, lengths of allocated objects are non-negative,
-references stored in `hRef` are NULL or allocated, and the zero maps are zero.
-Reference parameters are NULL or allocated. Procedures that change the heap
-re-establish these facts through free `ensures`, together with
-`nextRef >= old nextRef`. Loops that touch the heap assume them again at the top
-of the body and after the loop. These are assumptions rather than obligations
-because they hold in every reachable C0 state.
+references stored in reference-valued maps are NULL or allocated, and the zero
+rows are zero. Reference parameters are NULL or allocated. Procedures that
+change the heap re-establish these facts through free `ensures`, together with
+`nextRef >= old nextRef`. Loops that touch the heap assume them again at the
+top of the body and after the loop. These are assumptions rather than
+obligations because they hold in every reachable C0 state.
 
 `modifies` clauses are computed per procedure and closed over the call graph.
-Framing is per heap map: a callee that writes any `int` cell havocs all of
-`hInt` for the caller. C0 contracts cannot say which objects a function
-changes, so facts about unrelated objects of the same cell type do not survive
-a call unless the callee's postcondition restates them.
+Since each field has its own map, a callee that writes `p->count` changes only
+`h_node_count`: the caller keeps what it knows about every other field, every
+array, and every spec function that does not read `count`. Within one map,
+framing is still coarse: writing `p->count` forgets `q->count` for every `q`,
+because C0 contracts cannot say which objects a function changes.
 
 ## Current Limitations
 
@@ -201,10 +205,9 @@ a call unless the callee's postcondition restates them.
   link to calls in code.
 - SMT solvers do not do induction: from `is_sorted(A, 0, n)` they get
   `A[i] <= A[i+1]` for each `i`, but not `A[0] <= A[n-1]`.
-- Framing is per heap map (see above).
+- Framing within one map is per map, not per object (see above).
 - `\hastag` and C1 `void*` tags are not supported.
 - Strings are opaque: string literals are havocked values and string library
   functions are uninterpreted.
-- Long runs of straight-line writes into the same heap map (for example
-  initializing a struct with hundreds of fields) make Strata's symbolic
-  execution slow.
+- Long runs of straight-line writes into the same map (for example hundreds of
+  writes to one array) make Strata's symbolic execution slow.
