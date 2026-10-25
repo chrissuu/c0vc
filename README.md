@@ -30,12 +30,13 @@ Consider installing the C0 syntax highlighting Visual Studio Code extension, ava
 The LLVM backend exists primarily as a validation path for the frontend. It lets
 the compiler run generated programs, which is useful for testing a substantial part of the translation while the verified path is still being built.
 
-The StrataBoole backend lowers typed C0/C1 programs into a small Boole-facing IR
-and then renders StrataBoole source text. Its memory model is a map-backed
-logical heap with generated safety assertions for null checks, allocation
-checks, and array bounds checks. See
-[`C0VC/StrataBoole/README.md`](C0VC/StrataBoole/README.md) for the backend
-design.
+The StrataBoole backend lowers typed C0/C1 programs into Boole and can run the
+Strata verifier on the result. C0 runtime checks (null dereferences, array
+bounds, division by zero, shifts, `assert`, `error`) and contracts
+(`//@requires`, `//@ensures`, `//@loop_invariant`, `//@assert`) become proof
+obligations, and failures are reported at the C0 source location. See
+[`C0VC/StrataBoole/README.md`](C0VC/StrataBoole/README.md) for the translation
+and memory model.
 
 ## Usage
 
@@ -58,7 +59,32 @@ lake exe c0vc --emit=boole path/to/program.c0
 ```
 
 The Boole target writes `<input-basename>.boole.st` in the current working
-directory.
+directory, or the file given with `-o`. A `main` function is not required.
+
+Verify a program (needs `z3` on `PATH`, or `--solver=cvc5`):
+
+```sh
+lake exe c0vc --verify path/to/program.c0
+```
+
+```text
+program.c0:12:10: error: array index may be out of bounds [bounds_L12C10]
+program.c0: 7 of 8 proof obligations verified
+```
+
+`--int-model=bv32` (the default) uses exact 32-bit C0 arithmetic;
+`--int-model=checked` uses unbounded integers and adds an overflow obligation to
+every arithmetic operation. Run `c0vc` with no arguments for all options.
+
+## Tests
+
+`tests/boole/` holds C0 programs with the expected `--verify` output:
+
+```sh
+lake build c0vc
+tests/boole/run.sh            # compare
+tests/boole/run.sh --update   # regenerate the expected output
+```
 
 ## Repository Layout
 
@@ -76,10 +102,8 @@ Both LLVM and StrataBoole backends share the modules in `Ast/` up through
 ## Gaps
 Known StrataBoole gaps include:
 
-- effectful procedure-call lowering
-- callee-based framing
-- allocation in loop conditions
-- first-class array-of-struct element values outside field access
-- strings
-- `hastag`
-- non-tail returns.
+- calls inside contracts (specification functions such as `is_sorted`)
+- framing finer than one heap map per cell type
+- `\hastag` and C1 `void*`
+- string contents (strings are opaque values)
+- slow symbolic execution for long runs of straight-line heap writes.

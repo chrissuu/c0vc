@@ -1,0 +1,33 @@
+// Allocation returns fresh, zero-initialized memory.
+struct point { int x; int y; bool seen; struct point* next; };
+
+int fresh_is_zero()
+//@ensures \result == 0;
+{
+  int* p = alloc(int);
+  return *p;
+}
+
+bool fresh_struct()
+//@ensures \result;
+{
+  struct point* p = alloc(struct point);
+  return p->x == 0 && p->y == 0 && !p->seen && p->next == NULL;
+}
+
+int no_alias(int* q)
+//@requires q != NULL;
+{
+  *q = 1;
+  int* p = alloc(int);
+  *p = 2;
+  //@assert *q == 1;
+  return *p;
+}
+
+int[] make(int n)
+//@requires n >= 0;
+//@ensures \length(\result) == n;
+{
+  return alloc_array(int, n);
+}

@@ -1,0 +1,32 @@
+// Calls check the callee's precondition at the call site and assume its
+// postcondition afterwards.
+int half(int x)
+//@requires x >= 0;
+//@ensures 0 <= \result && \result <= x;
+{
+  return x / 2;
+}
+
+int quarter(int x)
+//@requires x >= 0;
+//@ensures 0 <= \result && \result <= x;
+{
+  return half(half(x));
+}
+
+int bad(int x) {
+  return half(x);
+}
+
+void touch(int[] A)
+//@requires \length(A) > 0;
+{
+  A[0] = 1;
+}
+
+int caller(int[] A)
+//@requires \length(A) > 1;
+{
+  touch(A);
+  return A[1];
+}

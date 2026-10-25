@@ -17,3 +17,5 @@ import C0VC.StrataBoole.IR
 import C0VC.StrataBoole.Struct
 import C0VC.StrataBoole.Trans
 import C0VC.StrataBoole.Codegen
+import C0VC.StrataBoole.Verify
+import C0VC.Embed.Lean

@@ -1,0 +1,13 @@
+// Contracts on a prototype apply to the definition and to every call.
+int pos(int x)
+//@requires x > 0;
+;
+
+int use_ok() { return pos(3); }
+int use_bad() { return pos(0); }
+
+int pos(int x)
+//@ensures \result > 0;
+{
+  return x;
+}

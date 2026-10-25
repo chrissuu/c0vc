@@ -344,13 +344,10 @@ partial def translateStm
           let (temp, tc') := Temp.bumpAndCreate tc
           (cmds ++ [.move temp expr], env', tc', lc')
     | _ =>
-        -- Evaluate lvalue subexpressions before the rhs, but delay the final
-        -- destination check until the store. This preserves C0's exception
-        -- order for cases like *p = 1 / 0 when p is NULL.
         let (cmdsLhs, lhsExpr, env', tc', lc') := translateLValueExpr senv lhs env tc lc
         let (cmdsRhs, expr, env'', tc'', lc'') := translateExpr senv val env' tc' lc'
         let (rhsTemp, tc''') := Temp.bumpAndCreate tc''
-        (cmdsLhs ++ cmdsRhs ++ [.move rhsTemp expr, .store lhsExpr (.temp rhsTemp)], env'', tc''', lc'')
+        (cmdsLhs ++ [.checkAddr lhsExpr] ++ cmdsRhs ++ [.move rhsTemp expr, .store lhsExpr (.temp rhsTemp)], env'', tc''', lc'')
 
   | .ifLit test thenBranch elseBranch =>
     let emitLabel (cmds : List Command) :=

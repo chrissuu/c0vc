@@ -1,0 +1,3 @@
+division.c0:15:10: error: divisor may be zero [divzero_L15C10]
+division.c0:15:10: error: division may overflow (INT_MIN / -1) [divoverflow_L15C10]
+division.c0: 8 of 10 proof obligations verified

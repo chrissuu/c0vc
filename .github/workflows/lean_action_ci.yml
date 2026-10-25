@@ -12,3 +12,9 @@ jobs:
     steps:
       - uses: actions/checkout@v5
       - uses: leanprover/lean-action@v1
+        with:
+          build-args: c0vc
+      - name: Install z3
+        run: sudo apt-get update && sudo apt-get install -y z3
+      - name: StrataBoole verification tests
+        run: tests/boole/run.sh

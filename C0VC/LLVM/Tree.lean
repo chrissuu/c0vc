@@ -65,6 +65,7 @@ deriving Inhabited
 inductive Command where
   | declare (dest : Temp) (tau : Tau)
   | move (dest : Temp) (src : Expr)
+  | checkAddr (dest : Expr)
   | store (dest : Expr) (src : Expr)
   | call (fname : String) (args : List Expr)
   | runtimeCall (fn : Runtime.Fn) (args : List Expr)
@@ -142,6 +143,7 @@ partial def ppExpr : Expr → String
 def ppCommand : Command → String
   | .declare dest tau => s!"{dest.name} : {ppTau tau};"
   | .move dest src => s!"{dest.name} <- {ppExpr src};"
+  | .checkAddr dest => s!"check_addr {ppExpr dest};"
   | .store dest src => s!"{ppExpr dest} <- {ppExpr src};"
   | .call fname args =>
       s!"call {fname}({String.intercalate ", " (List.map ppExpr args)});"
@@ -206,6 +208,8 @@ partial def ppCommandRaw (indentLevel : Nat) : Command → String
       s!"{spaces indentLevel}Declare({dest.name}, {ppTau tau})"
   | .move dest src =>
       s!"{spaces indentLevel}Move({dest.name},\n{ppExprRaw (indentLevel + 1) src}\n{spaces indentLevel})"
+  | .checkAddr dest =>
+      s!"{spaces indentLevel}CheckAddr(\n{ppExprRaw (indentLevel + 1) dest}\n{spaces indentLevel})"
   | .store dest src =>
       s!"{spaces indentLevel}Store(\n{ppExprRaw (indentLevel + 1) dest},\n{ppExprRaw (indentLevel + 1) src}\n{spaces indentLevel})"
   | .call fname args =>

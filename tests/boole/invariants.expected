@@ -1,0 +1,2 @@
+invariants.c0:20:21: error: loop invariant may not hold (after a loop iteration) (not proven: solver returned unknown) [insertLoopInvAssert_arbitrary_iter_maintain_invariant_loop_1_0_invariant_L20C21]
+invariants.c0: 4 of 5 proof obligations verified

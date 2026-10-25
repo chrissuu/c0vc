@@ -6,92 +6,69 @@ namespace C0VC.StrataBoole.Struct
 /--
 StrataBoole.Struct
 
-Recall that StrataBoole does not have a direct struct
-type / datatype. This module stores the translation unit
-between TypedAst's struct type (which is of List Fields)
-into the array-based flattened struct representation.
+Boole has no struct values, so a C0 struct is laid out as a run of flattened
+slots inside the object that stores it. Every scalar leaf field gets one slot;
+nested value structs are flattened recursively. Fields of different types share
+the slot numbering but live in different typed heaps.
 
 Author(s):
   ~ Chris Su <chrjs@cmu.edu>
 -/
 
-structure FieldPath where
-  root : String
-  fields : List String
-deriving BEq, Hashable, Repr
-
 abbrev SEnv := Std.HashMap String (List TypedAst.Field)
 
 structure FieldInfo where
-  index : Nat
+  /-- Slot offset of the field relative to the start of its struct. -/
+  offset : Nat
   tau : TypedAst.Tau
 
-abbrev FieldIndexMap := Std.HashMap FieldPath FieldInfo
-abbrev StructWidthMap := Std.HashMap String Nat
-
 structure Layout where
-  fields : FieldIndexMap
-  widths : StructWidthMap
+  /-- Keyed by (struct name, field name). -/
+  fields : Std.HashMap (String × String) FieldInfo := {}
+  /-- Number of flattened slots in each struct. -/
+  widths : Std.HashMap String Nat := {}
+  /-- Scalar leaf types of each struct, used to zero-initialize allocations. -/
+  leaves : Std.HashMap String (List TypedAst.Tau) := {}
 
-private def collectSEnv (structs : List TypedAst.Struct) : SEnv :=
-  structs.foldl
-    (fun env (name, fields) => env.insert name fields)
-    {}
+instance : Inhabited Layout := ⟨{}⟩
 
-private def fieldPathText (root : String) (fields : List String) : String :=
-  String.intercalate "." (root :: fields)
-
-partial def computeFields
-  (senv : SEnv)
-  (root : String)
-  (path : List String)
-  (fields : List TypedAst.Field)
-  (map : FieldIndexMap)
-  (start : Nat)
-  : Except String (FieldIndexMap × Nat) := do
-  match fields with
-  | [] => .ok (map, start)
-  | (tau, fieldName) :: rest =>
+private partial def layoutStruct (senv : SEnv) (layout : Layout) (name : String) : Except String Layout := do
+  if layout.widths.contains name then
+    return layout
+  let fields ← match senv.get? name with
+    | some fields => pure fields
+    | none => throw s!"struct {name} used before declaration"
+  let (layout, width, leaves) ← fields.foldlM
+    (fun (layout, offset, leaves) (tau, fieldName) => do
+      let layout := layout
       match tau with
-      | .int | .char | .bool | .ptr _ | .array _ =>
-          let map' := map.insert { root, fields := path ++ [fieldName] } { index := start, tau }
-          computeFields senv root path rest map' (start + 1)
-      | .struct name =>
-          let nestedFields ← match senv.get? name with
-            | some fields => .ok fields
-            | none => .error s!"struct {name} used before declaration"
-          let (map', start') ← computeFields senv root (path ++ [fieldName]) nestedFields map start
-          computeFields senv root path rest map' start'
-      | .string =>
-          .error s!"StrataBoole backend does not support string field {fieldPathText root (path ++ [fieldName])}"
-      | .null =>
-          .error s!"invalid null-typed field {fieldPathText root (path ++ [fieldName])}"
-      | .void =>
-          .error s!"invalid void-typed field {fieldPathText root (path ++ [fieldName])}"
+      | .struct inner =>
+          let layout ← layoutStruct senv layout inner
+          let innerWidth := layout.widths.getD inner 0
+          let layout := { layout with fields := layout.fields.insert (name, fieldName) { offset, tau } }
+          pure (layout, offset + innerWidth, leaves ++ layout.leaves.getD inner [])
+      | .void => throw s!"invalid void-typed field {name}.{fieldName}"
+      | .null => throw s!"invalid null-typed field {name}.{fieldName}"
+      | _ =>
+          let layout := { layout with fields := layout.fields.insert (name, fieldName) { offset, tau } }
+          pure (layout, offset + 1, leaves ++ [tau]))
+    (layout, 0, [])
+  pure { layout with
+    widths := layout.widths.insert name width
+    leaves := layout.leaves.insert name leaves }
 
 def computeLayout (structs : List TypedAst.Struct) : Except String Layout := do
-  let senv := collectSEnv structs
-  let (fields, widths) ← structs.foldlM
-    (fun (fieldAcc, widthAcc) (name, structFields) => do
-      let (fieldAcc', width) ← computeFields senv name [] structFields fieldAcc 0
-      .ok (fieldAcc', widthAcc.insert name width))
-    ({}, {})
-  .ok { fields, widths }
+  let senv : SEnv := structs.foldl (fun env (name, fields) => env.insert name fields) {}
+  structs.foldlM (fun layout (name, _) => layoutStruct senv layout name) {}
 
-def computeFieldLayout (structs : List TypedAst.Struct) : Except String FieldIndexMap := do
-  .ok (← computeLayout structs).fields
-
-def lookupFieldInfo (layout : FieldIndexMap) (root : String) (fields : List String) : Except String FieldInfo :=
-  match layout.get? { root, fields } with
+def lookupField (layout : Layout) (structName fieldName : String) : Except String FieldInfo :=
+  match layout.fields.get? (structName, fieldName) with
   | some info => .ok info
-  | none => .error s!"struct field {fieldPathText root fields} has no Boole heap slot"
+  | none => .error s!"struct {structName} has no field {fieldName}"
 
-def lookupFieldIndex (layout : FieldIndexMap) (root : String) (fields : List String) : Except String Nat := do
-  .ok (← lookupFieldInfo layout root fields).index
-
-def lookupStructWidth (widths : StructWidthMap) (name : String) : Except String Nat :=
-  match widths.get? name with
+def lookupWidth (layout : Layout) (structName : String) : Except String Nat :=
+  match layout.widths.get? structName with
   | some width => .ok width
-  | none => .error s!"struct {name} has no Boole layout width"
+  | none => .error s!"struct {structName} has no layout"
 
 end C0VC.StrataBoole.Struct

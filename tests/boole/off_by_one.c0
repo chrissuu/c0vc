@@ -1,0 +1,12 @@
+// The loop reads one element past the end of the array.
+int sum(int[] A, int n)
+//@requires n == \length(A);
+{
+  int s = 0;
+  for (int i = 0; i <= n; i++)
+  //@loop_invariant 0 <= i;
+  {
+    s += A[i];
+  }
+  return s;
+}

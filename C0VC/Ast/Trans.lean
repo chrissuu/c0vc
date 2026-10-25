@@ -230,10 +230,11 @@ def convertGDecl : C0VC.Ast.GDecl → Except String C0VC.ElabbedAst.GDecl
         annotations := annotations'
       })
 
-  | .fdecl retType fname params _ => do
+  | .fdecl retType fname params annotations => do
       let retType' ← convertTau retType
       let params' ← params.mapM convertParam
-      .ok (.fdecl retType' fname params' true)
+      let annotations' ← annotations.mapM convertMAnno
+      .ok (.fdecl retType' fname params' true annotations')
 
   | .typedef .. =>
       .error "typedef found after elaboration"

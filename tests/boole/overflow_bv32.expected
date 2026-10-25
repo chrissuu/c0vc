@@ -1,0 +1,2 @@
+overflow_bv32.c0:4:12: error: postcondition may not hold [ensures_L4C12]
+overflow_bv32.c0: 1 of 2 proof obligations verified

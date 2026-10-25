@@ -1,0 +1,15 @@
+// Parameters can be assigned; the body works on a local copy.
+int countdown(int n)
+//@requires 0 <= n && n <= 1000;
+//@ensures 0 <= \result && \result <= 1000;
+{
+  int steps = 0;
+  while (n > 0)
+  //@loop_invariant 0 <= n && n <= 1000 && 0 <= steps && steps <= 1000;
+  //@loop_invariant steps + n <= 1000;
+  {
+    n--;
+    steps++;
+  }
+  return steps;
+}

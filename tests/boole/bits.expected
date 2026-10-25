@@ -1,0 +1,2 @@
+bits.c0:9:10: error: shift amount may be outside [0, 32) [shift_L9C10]
+bits.c0: 3 of 4 proof obligations verified

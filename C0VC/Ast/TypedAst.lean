@@ -33,6 +33,7 @@ inductive Expr where
 structure TypedExpr where
   node : Expr
   tau : Tau
+  span : Option C0VC.Utils.SrcSpan.SrcSpan := none
 end
 
 mutual
@@ -46,6 +47,7 @@ inductive LValue where
 structure TypedLValue where
   node : LValue
   tau : Tau
+  span : Option C0VC.Utils.SrcSpan.SrcSpan := none
 end
 
 mutual

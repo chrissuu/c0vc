@@ -1,0 +1,2 @@
+prototypes.c0:7:24: error: precondition of pos (declared at line 3) may not hold [precondition_L7C24]
+prototypes.c0: 4 of 5 proof obligations verified
