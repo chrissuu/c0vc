@@ -70,9 +70,4 @@ def lookupField (layout : Layout) (structName fieldName : String) : Except Strin
   | some info => .ok info
   | none => .error s!"struct {structName} has no field {fieldName}"
 
-def lookupWidth (layout : Layout) (structName : String) : Except String Nat :=
-  match layout.widths.get? structName with
-  | some width => .ok width
-  | none => .error s!"struct {structName} has no layout"
-
 end C0VC.StrataBoole.Struct

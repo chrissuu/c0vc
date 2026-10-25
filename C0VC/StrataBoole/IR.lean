@@ -71,6 +71,62 @@ inductive Expr where
   | fnCall (name : String) (args : List Expr)
 deriving Inhabited, BEq, Repr
 
+namespace Expr
+
+/-- The immediate subexpressions of an expression. -/
+def children : Expr → List Expr
+  | .arith _ a b | .cmp _ a b | .mathArith _ a b | .mathCmp _ a b
+  | .eq a b | .neq a b | .and a b | .or a b | .implies a b | .mapGet a b => [a, b]
+  | .not e | .old e | .forall _ e | .exists _ e => [e]
+  | .ite c t f => [c, t, f]
+  | .fnCall _ args => args
+  | _ => []
+
+/-- Rebuild an expression with `f` applied to each immediate subexpression. -/
+def mapChildren (f : Expr → Expr) : Expr → Expr
+  | .arith op a b => .arith op (f a) (f b)
+  | .cmp op a b => .cmp op (f a) (f b)
+  | .mathArith op a b => .mathArith op (f a) (f b)
+  | .mathCmp op a b => .mathCmp op (f a) (f b)
+  | .eq a b => .eq (f a) (f b)
+  | .neq a b => .neq (f a) (f b)
+  | .and a b => .and (f a) (f b)
+  | .or a b => .or (f a) (f b)
+  | .implies a b => .implies (f a) (f b)
+  | .mapGet a b => .mapGet (f a) (f b)
+  | .not e => .not (f e)
+  | .old e => .old (f e)
+  | .forall bs e => .forall bs (f e)
+  | .exists bs e => .exists bs (f e)
+  | .ite c t e => .ite (f c) (f t) (f e)
+  | .fnCall name args => .fnCall name (args.map f)
+  | e => e
+
+/-- Apply `g` to every node, children first. -/
+partial def mapBottomUp (g : Expr → Expr) (e : Expr) : Expr :=
+  g (e.mapChildren (mapBottomUp g))
+
+/-- Variables that occur free in an expression. -/
+partial def freeVars : Expr → List String
+  | .var name => [name]
+  | .forall bs e | .exists bs e => (freeVars e).filter fun n => !bs.any (·.1 == n)
+  | e => e.children.flatMap freeVars
+
+/-- Names of the Boole functions an expression applies. -/
+partial def fnCalls (e : Expr) : List String :=
+  (match e with
+    | .fnCall name _ => [name]
+    | _ => []) ++ e.children.flatMap fnCalls
+
+/-- Capture-avoiding substitution of variables; quantifiers shadow `σ`. -/
+partial def subst (σ : List (String × Expr)) : Expr → Expr
+  | .var name => (σ.lookup name).getD (.var name)
+  | .forall bs e => .forall bs (subst (σ.filter fun (n, _) => !bs.any (·.1 == n)) e)
+  | .exists bs e => .exists bs (subst (σ.filter fun (n, _) => !bs.any (·.1 == n)) e)
+  | e => e.mapChildren (subst σ)
+
+end Expr
+
 inductive LValue where
   | var (name : String)
   | mapSlot (map key : Expr)
@@ -92,6 +148,45 @@ inductive Stmt where
   | block (label : String) (body : List Stmt)
   | exit (label : String)
 deriving Inhabited, Repr
+
+namespace Stmt
+
+/-- Every expression a statement evaluates, including in nested statements. -/
+partial def exprs : Stmt → List Expr
+  | .assign lhs rhs =>
+      (match lhs with
+        | .var _ => []
+        | .mapSlot map key => [map, key]) ++ [rhs]
+  | .check _ e | .assume e => [e]
+  | .ifElse c t f => [c] ++ t.flatMap exprs ++ f.flatMap exprs
+  | .whileLoop c invs body => [c] ++ invs.map (·.2) ++ body.flatMap exprs
+  | .call _ _ args => args
+  | .block _ body => body.flatMap exprs
+  | _ => []
+
+/-- Procedures a statement calls, including in nested statements. -/
+partial def calls : Stmt → List String
+  | .call _ fname _ => [fname]
+  | .ifElse _ t f => t.flatMap calls ++ f.flatMap calls
+  | .whileLoop _ _ body | .block _ body => body.flatMap calls
+  | _ => []
+
+/-- Apply `f` to every expression a statement evaluates, including in nested statements. -/
+partial def mapExprs (f : Expr → Expr) : Stmt → Stmt
+  | .assign lhs rhs =>
+      let lhs := match lhs with
+        | .var n => LValue.var n
+        | .mapSlot map key => .mapSlot (f map) (f key)
+      .assign lhs (f rhs)
+  | .check l e => .check l (f e)
+  | .assume e => .assume (f e)
+  | .ifElse c t e => .ifElse (f c) (t.map (mapExprs f)) (e.map (mapExprs f))
+  | .whileLoop c invs body => .whileLoop (f c) (invs.map fun (l, e) => (l, f e)) (body.map (mapExprs f))
+  | .call lhs fname args => .call lhs fname (args.map f)
+  | .block l body => .block l (body.map (mapExprs f))
+  | stm => stm
+
+end Stmt
 
 inductive SpecKind where
   | requires
