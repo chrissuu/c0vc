@@ -1,0 +1,15 @@
+// args: -l spec_lib.h0
+// Header functions can be called in contracts; their results are opaque,
+// but calls in code agree with calls in contracts.
+int bits(int x)
+//@ensures \result == popcount(x);
+{
+  return popcount(x);
+}
+
+int twice_bits(int x)
+//@ensures \result == popcount(x) + popcount(x);
+{
+  int b = bits(x);
+  return b + b;
+}

@@ -1,0 +1,11 @@
+// Inside annotations @ is whitespace, so continuation lines may start with @.
+int between(int lo, int x, int hi)
+/*@requires lo <= hi
+  @      && hi < 1000000; @*/
+/*@ensures lo <= \result
+  @      && \result <= hi; @*/
+{
+  if (x < lo) return lo;
+  if (x > hi) return hi;
+  return x;
+}

@@ -1,0 +1,15 @@
+// A prototype's contract uses the prototype's parameter names.
+int clamp(int value, int limit)
+//@requires limit >= 0;
+//@ensures 0 <= \result && \result <= limit;
+;
+
+int clamp(int x, int hi) {
+  if (x < 0) return 0;
+  if (x > hi) return hi;
+  return x;
+}
+
+int use() {
+  return clamp(5, -1);
+}

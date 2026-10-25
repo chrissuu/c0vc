@@ -102,7 +102,8 @@ Both LLVM and StrataBoole backends share the modules in `Ast/` up through
 ## Gaps
 Known StrataBoole gaps include:
 
-- calls inside contracts (specification functions such as `is_sorted`)
+- contracts calling functions that allocate, and recursive or loop-based spec
+  functions other than the standard search loop (these stay uninterpreted)
 - framing finer than one heap map per cell type
 - `\hastag` and C1 `void*`
 - string contents (strings are opaque values)

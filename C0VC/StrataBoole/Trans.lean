@@ -94,6 +94,9 @@ structure St where
   labels : Array LabelInfo := #[]
   usedLabels : Std.HashSet String := {}
   usesStrings : Bool := false
+  usesHeap : Bool := false
+  /-- Pure C0 functions, mapped to the Boole functions that stand for them. -/
+  specFns : Std.HashMap String String := {}
 
 abbrev M := StateT St (Except String)
 
@@ -301,7 +304,16 @@ partial def subst (σ : List (String × Expr)) : Expr → Expr
   | .mapGet m k => .mapGet (subst σ m) (subst σ k)
   | .old e => .old (subst σ e)
   | .forall bs body => .forall bs (subst (σ.filter fun (n, _) => !bs.any (·.1 == n)) body)
+  | .exists bs body => .exists bs (subst (σ.filter fun (n, _) => !bs.any (·.1 == n)) body)
+  | .fnCall name args => .fnCall name (args.map (subst σ))
   | e => e
+
+/-- The heap maps a pure function can read, in argument order. -/
+def heapReads (usesStrings : Bool) : List String :=
+  ["len", "hInt", "hBool", "hRef"] ++ (if usesStrings then ["hStr"] else [])
+
+/-- Formal parameter names for the heap maps of a spec function. -/
+def heapFormal (heap : String) : String := "__" ++ heap
 
 /-! ## Pre items -/
 
@@ -523,11 +535,11 @@ partial def lowerStructBase (e : CExpr) : M (List Pre × Expr × Expr × Expr ×
 
 partial def lowerCall (span? : Option SrcSpan) (fname : String) (args : List CExpr) (retTau : CTau) :
     M (List Pre × Expr) := do
-  if (← get).inSpec then
-    fail s!"calls in contracts are not supported yet (call to {fname})" span?
   let sig ← match (← get).sigs.get? fname with
     | some sig => pure sig
     | none => fail s!"internal error: unknown function {fname}" span?
+  if (← get).inSpec then
+    return ← lowerSpecCall span? fname sig args
   let lowered ← args.mapM fun arg => do
     let (pre, e) ← lowerExpr arg
     pure (← lowerTau arg.span arg.tau, pre, e)
@@ -546,6 +558,25 @@ partial def lowerCall (span? : Option SrcSpan) (fname : String) (args : List CEx
       let tmp ← freshTemp "call" tau
       pure (pre ++ preconditions ++
         [.stmt (.declare tmp tau), .stmt (.call (some tmp) sig.boogieName argExprs)], .var tmp)
+
+/-- A call inside a contract applies the Boole function of a pure C0 function. -/
+partial def lowerSpecCall (span? : Option SrcSpan) (fname : String) (sig : FnSig) (args : List CExpr) :
+    M (List Pre × Expr) := do
+  let st ← get
+  let some fnName := st.specFns.get? fname
+    | let reason := if sig.ret.isNone then "returns void"
+        else "writes memory or allocates, directly or through a call"
+      fail s!"contracts can only call pure functions, but {fname} {reason}" span?
+  let lowered ← args.mapM lowerExpr
+  let argExprs := lowered.map (·.2)
+  let σ := (sig.params.map (·.2.1)).zip argExprs
+  let preconditions ← sig.requires.mapM fun (req, reqSpan?) => do
+    let declared := match reqSpan? with
+      | some span => s!" (declared at line {span.startLoc.line})"
+      | none => ""
+    obligation "precondition" s!"precondition of {fname}{declared} may not hold" span? (subst σ req)
+  let heaps := if st.usesHeap then (heapReads st.usesStrings).map Expr.var else []
+  pure (lowered.flatMap (·.1) ++ preconditions, .fnCall fnName (heaps ++ argExprs))
 
 partial def lowerAlloc (span? : Option SrcSpan) (elemTau : CTau) (size? : Option CExpr) :
     M (List Pre × Expr) := do
@@ -781,7 +812,10 @@ private def lowerSig (usesHeap : Bool) (f : C0VC.TypedAst.FunctionDef) : M FnSig
             let obs ← specObligations "postconditions" e.span pre
             let label ← mkLabel "ensures" "postcondition may not hold" e.span
             let clauses := obs ++ [(label, c)]
-            pure (requires, specs ++ clauses.map fun (l, c) => { kind := .ensures, expr := c, label := some l })
+            -- A header function has no body to check its postcondition
+            -- against; its contract is trusted.
+            pure (requires, specs ++ clauses.map fun (l, c) =>
+              { kind := .ensures, expr := c, label := some l, free := f.external })
         | .asserts e => fail "//@assert cannot annotate a function declaration" e.span
         | .loopInvariant e => fail "//@loop_invariant cannot annotate a function declaration" e.span
     let freeSpecs : List Spec :=
@@ -898,13 +932,304 @@ def heapGlobalDecls (cfgUsesStrings : Bool) : List (String × Tau) :=
   , ("zeroBool", cells .bool)
   , ("zeroRef", cells .ref) ]
 
+/-! ## Spec functions
+
+A pure C0 function (one that neither writes memory nor allocates, directly or
+through calls) gets a Boole `function` so that contracts can call it. The
+function takes the heap maps it may read as extra arguments. Its procedure gets
+the free postcondition `\result == f_fn(heap, args)`, which links calls in code
+to calls in contracts; it holds because a pure C0 function is deterministic.
+
+The function body is
+- definitional when the C0 body is in expression form (returns, `if`, local
+  declarations and assignments), or is the standard search loop
+  `for (int i = lo; i < hi; i++) if (c) return false; return true;`
+  (a `forall`) or its dual returning `true` from the loop (an `exists`);
+- uninterpreted otherwise, including for recursive functions.
+-/
+
+private def exprChildren (e : CExpr) : List CExpr :=
+  match e.node with
+  | .binop _ l r => [l, r]
+  | .ternary c t f => [c, t, f]
+  | .call _ args => args
+  | .length a | .deref a | .dot a _ | .arrow a _ => [a]
+  | .allocArray _ n => [n]
+  | .arrAccess a i => [a, i]
+  | _ => []
+
+private partial def exprAny (p : CExpr → Bool) (e : CExpr) : Bool :=
+  p e || (exprChildren e).any (exprAny p)
+
+private partial def exprCallees (e : CExpr) : List String :=
+  (match e.node with
+    | .call fname _ => [fname]
+    | _ => []) ++ (exprChildren e).flatMap exprCallees
+
+private def annoExpr : C0VC.TypedAst.Anno → CExpr
+  | .requires e | .ensures e | .asserts e | .loopInvariant e => e
+
+/-- Every expression a statement evaluates, including in nested statements. -/
+private partial def stmExprs : CStm → List CExpr
+  | .assign lhs val =>
+      (match lhs.node with
+        | .var _ => []
+        | _ => [lvalueToExpr lhs]) ++ [val]
+  | .ifLit c t f => [c] ++ stmExprs t ++ stmExprs f
+  | .whileLit c body => [c] ++ stmExprs body
+  | .ret v => v.toList
+  | .seq a b => stmExprs a ++ stmExprs b
+  | .declare _ _ init body => init.toList ++ stmExprs body
+  | .expr e | .assert e | .error e => [e]
+  | .annotation a => [annoExpr a]
+  | .nop => []
+
+private partial def stmWritesMemory : CStm → Bool
+  | .assign lhs _ =>
+      match lhs.node with
+      | .var _ => false
+      | _ => true
+  | .ifLit _ t f => stmWritesMemory t || stmWritesMemory f
+  | .whileLit _ body => stmWritesMemory body
+  | .seq a b => stmWritesMemory a || stmWritesMemory b
+  | .declare _ _ _ body => stmWritesMemory body
+  | _ => false
+
+private def isAlloc (e : CExpr) : Bool :=
+  match e.node with
+  | .alloc _ | .allocArray .. => true
+  | _ => false
+
+/-- Functions that neither write memory nor allocate, directly or through calls. -/
+def pureFunctions (program : C0VC.TypedAst.Program) : Std.HashSet String := Id.run do
+  let info := program.map fun f =>
+    let exprs := f.body.flatMap stmExprs
+    let direct := !f.external && (f.body.any stmWritesMemory || exprs.any (exprAny isAlloc))
+    (f.fname, direct, exprs.flatMap exprCallees)
+  let mut pureFns : Std.HashSet String :=
+    Std.HashSet.ofList (info.filterMap fun (name, direct, _) => if direct then none else some name)
+  for _ in [0:program.length + 1] do
+    pureFns := info.foldl
+      (fun acc (name, _, callees) =>
+        if acc.contains name && callees.all acc.contains then acc else acc.erase name)
+      pureFns
+  return pureFns
+
+private partial def stmAnnoExprs : CStm → List CExpr
+  | .annotation a => [annoExpr a]
+  | .ifLit _ t f => stmAnnoExprs t ++ stmAnnoExprs f
+  | .whileLit _ body => stmAnnoExprs body
+  | .seq a b => stmAnnoExprs a ++ stmAnnoExprs b
+  | .declare _ _ _ body => stmAnnoExprs body
+  | _ => []
+
+/--
+Pure functions that contracts use: those called in a contract or annotation,
+and the pure functions their bodies call.
+-/
+def contractFunctions (program : C0VC.TypedAst.Program) (pureFns : Std.HashSet String) :
+    Std.HashSet String := Id.run do
+  let callees : Std.HashMap String (List String) :=
+    program.foldl (fun acc f => acc.insert f.fname ((f.body.flatMap stmExprs).flatMap exprCallees)) {}
+  let seeds := program.flatMap fun f =>
+    ((f.annotations.map annoExpr) ++ f.body.flatMap stmAnnoExprs).flatMap exprCallees
+  let mut needed : Std.HashSet String := {}
+  let mut work := seeds.filter pureFns.contains
+  for _ in [0:program.length + 1] do
+    let fresh := work.filter (!needed.contains ·)
+    needed := fresh.foldl (·.insert ·) needed
+    work := (fresh.flatMap (callees.getD · [])).filter pureFns.contains
+  return needed
+
+/-- Order functions so that functions called in a contract come before its function. -/
+private def orderByContractCalls (program : C0VC.TypedAst.Program) : List C0VC.TypedAst.FunctionDef := Id.run do
+  let byName : Std.HashMap String C0VC.TypedAst.FunctionDef :=
+    program.foldl (fun acc f => acc.insert f.fname f) {}
+  let mut visited : Std.HashSet String := {}
+  let mut order : Array C0VC.TypedAst.FunctionDef := #[]
+  -- Iterative DFS; contract call graphs are tiny, so repeated passes are fine.
+  for _ in [0:program.length + 1] do
+    for f in program do
+      if visited.contains f.fname then continue
+      let deps := (f.annotations.map annoExpr).flatMap exprCallees
+      if deps.all (fun d => visited.contains d || d == f.fname || !byName.contains d) then
+        visited := visited.insert f.fname
+        order := order.push f
+  for f in program do
+    if !visited.contains f.fname then
+      order := order.push f
+  return order.toList
+
+private partial def flatItems : CStm → List CStm
+  | .seq a b => flatItems a ++ flatItems b
+  | .declare x tau init body => [.declare x tau init .nop] ++ flatItems body
+  | .nop | .annotation _ => []
+  | s => [s]
+
+private def boolLitOf (e : CExpr) : Option Bool :=
+  match e.node with
+  | .trueLit => some true
+  | .falseLit => some false
+  | _ => none
+
+private def isVar (name : String) (e : CExpr) : Bool :=
+  match e.node with
+  | .var n => n == name
+  | _ => false
+
+private def isIncrement (name : String) : CStm → Bool
+  | .assign lhs val =>
+      match lhs.node, val.node with
+      | .var n, .binop .plus v one =>
+          n == name && isVar name v &&
+            (match one.node with
+              | .intLit 1 => true
+              | _ => false)
+      | _, _ => false
+  | _ => false
+
+/--
+Recognize `for (int i = lo; i < hi; i++) if (c) return b; return !b;` and
+return the C0 loop variable, `lo`, `hi`, whether the bound is inclusive, `c`,
+and `b`.
+-/
+private def searchLoop? (body : CStm) : Option (String × CExpr × CExpr × Bool × CExpr × Bool) :=
+  match flatItems body with
+  | [.declare i _ (some lo) .nop, .whileLit test loopBody, .ret (some after)] =>
+      match test.node, flatItems loopBody, boolLitOf after with
+      | .binop op v hi, [.ifLit c thenS elseS, incr], some afterB =>
+          let inclusive := match op with
+            | .lte => some true
+            | .lt => some false
+            | _ => none
+          match inclusive, flatItems thenS, flatItems elseS with
+          | some incl, [.ret (some inLoop)], [] =>
+              if isVar i v && isIncrement i incr && boolLitOf inLoop == some !afterB then
+                some (i, lo, hi, incl, c, afterB)
+              else none
+          | _, _, _ => none
+      | _, _, _ => none
+  | _ => none
+
+private def notExpressionForm : M α := throw "not in expression form"
+
+/-- The value of a function body in expression form, given the value of what follows. -/
+private partial def stmtThen (stm : CStm) (rest : Option Expr) : M (Option Expr) := do
+  match stm with
+  | .nop | .annotation _ | .assert _ | .error _ | .expr _ => pure rest
+  | .ret (some e) => some <$> (Prod.snd <$> lowerExpr e)
+  | .ret none => pure none
+  | .seq a b => do
+      let restB ← stmtThen b rest
+      stmtThen a restB
+  | .declare x tau init body => withScope do
+      let bt ← lowerTau none tau
+      let initE ← init.mapM fun e => Prod.snd <$> lowerExpr e
+      let n ← bindVar x bt
+      let r ← stmtThen body rest
+      pure (r.map fun r => match initE with
+        | some ie => subst [(n, ie)] r
+        | none => r)
+  | .assign lhs val =>
+      match lhs.node with
+      | .var x => do
+          let n ← lookupVar x lhs.span
+          let (_, v) ← lowerExpr val
+          pure (rest.map (subst [(n, v)]))
+      | _ => notExpressionForm
+  | .ifLit c t f => do
+      let (_, c') ← lowerExpr c
+      let tr ← withScope (stmtThen t rest)
+      let fr ← withScope (stmtThen f rest)
+      match tr, fr with
+      | some a, some b => pure (some (mkIte c' a b))
+      | _, _ => notExpressionForm
+  | .whileLit .. => notExpressionForm
+
+private def attempt (m : M α) : M (Option α) := do
+  let saved ← get
+  try
+    some <$> m
+  catch _ =>
+    set saved
+    pure none
+
+/-- The definitional body of a spec function, over the heap formals and parameters. -/
+private def specBody (f : C0VC.TypedAst.FunctionDef) (sig : FnSig) : M (Option Expr) := do
+  let saved ← get
+  resetProc f.fname
+  let result ← attempt <| withSpec <| withScope do
+    for (tau, boogieName, c0Name) in sig.params do
+      bindAs c0Name boogieName tau
+    let body := bodyStm f.body
+    match searchLoop? body with
+    | some (i, lo, hi, inclusive, c, afterB) =>
+        let (_, lo') ← lowerExpr lo
+        let (_, hi') ← lowerExpr hi
+        withScope do
+          let n ← bindVar i .int
+          let (_, c') ← lowerExpr c
+          let range := Expr.and (.cmp .le lo' (.var n))
+            (.cmp (if inclusive then .le else .lt) (.var n) hi')
+          if afterB then
+            pure (some (Expr.forall [(n, .int)] (mkImplies range (mkNot c'))))
+          else
+            pure (some (Expr.exists [(n, .int)] (mkAnd range c')))
+    | none => stmtThen body none
+  -- Obligations met while lowering a definition are checked in the procedure.
+  modify fun st => { st with labels := saved.labels, usedLabels := saved.usedLabels }
+  let st ← get
+  let toFormal := if st.usesHeap then (heapReads st.usesStrings).map fun h => (h, Expr.var (heapFormal h)) else []
+  pure ((result.join).map (subst toFormal))
+
+private partial def fnCallsIn : Expr → List String
+  | .fnCall name args => name :: args.flatMap fnCallsIn
+  | .arith _ a b | .cmp _ a b | .mathArith _ a b | .mathCmp _ a b
+  | .eq a b | .neq a b | .and a b | .or a b | .implies a b | .mapGet a b =>
+      fnCallsIn a ++ fnCallsIn b
+  | .not e | .old e | .forall _ e | .exists _ e => fnCallsIn e
+  | .ite c t f => fnCallsIn c ++ fnCallsIn t ++ fnCallsIn f
+  | _ => []
+
+/-- Drop bodies that depend on themselves, and order definitions before their uses. -/
+private def orderFunctions (fns : List Function) : List Function := Id.run do
+  let mut emitted : Std.HashSet String := Std.HashSet.ofList (fns.filter (·.body.isNone) |>.map (·.name))
+  let mut out : Array Function := (fns.filter (·.body.isNone)).toArray
+  let mut pending := fns.filter (·.body.isSome)
+  for _ in [0:fns.length + 1] do
+    let (ready, waiting) := pending.partition fun fn =>
+      (fn.body.map fnCallsIn |>.getD []).all emitted.contains
+    for fn in ready do
+      emitted := emitted.insert fn.name
+      out := out.push fn
+    pending := waiting
+  -- Recursive definitions stay uninterpreted.
+  return (pending.map ({ · with body := none })) ++ out.toList
+
+private partial def stmDeclTaus : CStm → List CTau
+  | .declare _ tau _ body => tau :: stmDeclTaus body
+  | .ifLit _ t f => stmDeclTaus t ++ stmDeclTaus f
+  | .whileLit _ body => stmDeclTaus body
+  | .seq a b => stmDeclTaus a ++ stmDeclTaus b
+  | _ => []
+
+private def programUsesStrings (program : C0VC.TypedAst.Program) : Bool :=
+  let isString (tau : CTau) : Bool := match tau with
+    | .string => true
+    | _ => false
+  program.any fun f =>
+    isString f.retType || f.params.any (isString ·.1) ||
+    f.body.any (fun stm => (stmDeclTaus stm).any isString ||
+      (stmExprs stm).any (exprAny (isString ·.tau)))
+
 def runWithConfig (cfg : Config) (program : C0VC.TypedAst.Program) : Except String Program := do
   let structs := program.flatMap (·.structs)
   let layout ← Struct.computeLayout structs
   let usesHeap := programUsesHeap program
+  let usesStrings := programUsesStrings program
   let baseReserved : Std.HashSet String :=
     Std.HashSet.ofList (booleKeywords ++ heapGlobals ++ zeroMaps.map (·.2) ++
-      [cfg.resultName, bodyLabel, "__r", "__e", "__i"])
+      heapGlobals.map heapFormal ++ [cfg.resultName, bodyLabel, "__r", "__e", "__i"])
   let procNames : Std.HashMap String String :=
     program.foldl
       (fun acc f =>
@@ -912,19 +1237,54 @@ def runWithConfig (cfg : Config) (program : C0VC.TypedAst.Program) : Except Stri
         acc.insert f.fname (pickName taken (sanitize f.fname)))
       {}
   let reserved := procNames.fold (fun acc _ name => acc.insert name) baseReserved
-  let st0 : St := { cfg, layout, procNames, reserved }
-  let action : M (List (C0VC.TypedAst.FunctionDef × FnSig × Option (List Stmt))) := do
-    for f in program do
+  let pureFns := pureFunctions program
+  let neededFns := contractFunctions program pureFns
+  let specFns : Std.HashMap String String :=
+    program.foldl
+      (fun acc f =>
+        let isVoid := match f.retType with
+          | .void => true
+          | _ => false
+        if neededFns.contains f.fname && !isVoid then
+          let base := procNames.getD f.fname f.fname ++ "_fn"
+          let taken (n : String) := reserved.contains n || acc.toList.any (·.2 == n)
+          acc.insert f.fname (pickName taken base)
+        else acc)
+      {}
+  let reserved := specFns.fold (fun acc _ name => acc.insert name) reserved
+  let st0 : St := { cfg, layout, procNames, reserved, specFns, usesHeap, usesStrings }
+  let action : M (List (C0VC.TypedAst.FunctionDef × FnSig × Option (List Stmt)) × List Function) := do
+    for f in orderByContractCalls program do
       let sig ← lowerSig usesHeap f
       modify fun st => { st with sigs := st.sigs.insert f.fname sig }
-    program.mapM fun f => do
+    let functions ← program.filterMapM fun f => do
+      let some fnName := (← get).specFns.get? f.fname | pure none
+      let sig := (← get).sigs.getD f.fname default
+      let body ← if f.external then pure none else specBody f sig
+      let st ← get
+      let heapParams :=
+        if st.usesHeap then
+          (heapReads st.usesStrings).map fun h =>
+            ((heapGlobalDecls st.usesStrings).lookup h |>.getD .math, heapFormal h)
+        else []
+      let ret := (sig.ret.map (·.1)).getD .int
+      pure (some { name := fnName, params := heapParams ++ sig.params.map (fun (t, n, _) => (t, n)), ret, body })
+    let procs ← program.mapM fun f => do
       let sig := (← get).sigs.getD f.fname default
       let body ← if f.external then pure none else some <$> lowerBody usesHeap f sig
       pure (f, sig, body)
-  let (lowered, st) ← action.run st0
+    pure (procs, orderFunctions functions)
+  let ((lowered, functions), st) ← action.run st0
   let mods := computeModifies (lowered.map fun (_, sig, body) => (sig.boogieName, body))
-  let procedures := lowered.map fun (_, sig, body) =>
+  let procedures := lowered.map fun (f, sig, body) =>
     let modifies := mods.getD sig.boogieName []
+    let linkFacts : List Spec :=
+      match st.specFns.get? f.fname, sig.ret with
+      | some fnName, some (_, resultName) =>
+          let heaps := if usesHeap then (heapReads st.usesStrings).map Expr.var else []
+          let args := heaps ++ sig.params.map fun (_, name, _) => Expr.var name
+          [{ kind := .ensures, expr := .eq (.var resultName) (.fnCall fnName args), free := true }]
+      | _, _ => []
     let resultFacts : List Spec :=
       match sig.ret with
       | some (.ref, name) => [{ kind := .ensures, expr := validRef (.var name), free := true }]
@@ -940,13 +1300,14 @@ def runWithConfig (cfg : Config) (program : C0VC.TypedAst.Program) : Except Stri
     { name := sig.boogieName
       params := sig.params.map fun (tau, name, _) => (tau, name)
       ret := sig.ret
-      specs := sig.specs ++ frameFacts ++ resultFacts
+      specs := sig.specs ++ frameFacts ++ resultFacts ++ linkFacts
       modifies
       body }
   pure {
     intModel := cfg.intModel
     usesStrings := st.usesStrings
     globals := if usesHeap then heapGlobalDecls st.usesStrings else []
+    functions
     procedures
     labels := st.labels }
 

@@ -432,17 +432,33 @@ partial def classifyTypedefsWith (initialTypedefs : List String) (tokens : List 
 partial def classifyTypedefs (tokens : List Token) : List Token :=
   classifyTypedefsWith [] tokens
 
+/-- Where the lexer is relative to annotations; `@` is whitespace inside one. -/
+inductive AnnoState where
+  | outside
+  | line
+  | block
+
 partial def munchRaw (includeAnnotations : Bool) (fileName : String) (body : String) : Except String (List Token) :=
-  let rec go (s : String.Slice) (line col : Nat) (acc : List Token) : Except String (List Token) :=
+  let rec go (s : String.Slice) (line col : Nat) (acc : List Token) (anno : AnnoState := .outside) :
+      Except String (List Token) :=
     if s.isEmpty then
       let loc := SrcLoc.mk line col
       let eof : Token := { kind := .eof, span := SrcSpan.mk loc loc fileName }
       .ok ((acc.reverse) ++ [eof])
     else
       let ws := s.takeWhile isWhitespace
+      let inAnno := match anno with
+        | .outside => false
+        | _ => true
       if !ws.isEmpty then
         let nextLoc := advanceLocBySlice line col ws
-        go (s.drop ws.toString.length) nextLoc.line nextLoc.col acc
+        let anno := match anno with
+          | .line => if ws.toString.contains '\n' then .outside else .line
+          | other => other
+        go (s.drop ws.toString.length) nextLoc.line nextLoc.col acc anno
+      else if inAnno && s.startsWith "@" && !s.startsWith "@*/" then
+        -- "In annotations, the @ character is treated as whitespace." (C0 reference)
+        go (s.drop 1) line (col + 1) acc anno
       else if s.startsWith "/*" && !s.startsWith "/*@" && (matchComment includeAnnotations s s.positions.length).isNone then
         .error s!"lexical error at {fileName}:{line}:{col}: unterminated block comment"
       else
@@ -458,7 +474,7 @@ partial def munchRaw (includeAnnotations : Bool) (fileName : String) (body : Str
           let consumed := matched.toString.length
           let nextLoc := advanceLocBySlice line col matched
           if (matchComment includeAnnotations s s.positions.length).isSome then
-            go (s.drop consumed) nextLoc.line nextLoc.col acc
+            go (s.drop consumed) nextLoc.line nextLoc.col acc anno
           else
             match toTokenKind? matched with
             | some kind =>
@@ -466,7 +482,12 @@ partial def munchRaw (includeAnnotations : Bool) (fileName : String) (body : Str
                 kind := kind
                 span := SrcSpan.mk (SrcLoc.mk line col) (SrcLoc.mk nextLoc.line nextLoc.col) fileName
               }
-              go (s.drop consumed) nextLoc.line nextLoc.col (tok :: acc)
+              let anno := match kind with
+                | .annotation => AnnoState.line
+                | .openMultilineAnnotation => .block
+                | .closeMultilineAnnotation => .outside
+                | _ => anno
+              go (s.drop consumed) nextLoc.line nextLoc.col (tok :: acc) anno
             | none =>
               .error s!"lexical error at {fileName}:{line}:{col}: malformed token `{matched.toString}`"
   go body.toSlice 1 1 []

@@ -868,7 +868,23 @@ def parseStmFromTokens (tokens : List Tok) : Except String MarkedStm :=
 def parseGdeclFromTokens (tokens : List Tok) : Except String GDecl :=
   runParser parseGdecl tokens
 
+private def streamLocation (s : TokStream) : String :=
+  match s.input.head? with
+  | some tok =>
+      let span := tok.span
+      s!"{span.fileName}:{span.startLoc.line}:{span.startLoc.col}: parse error near {C0VC.Token.Print.ppTokenKind tok.kind}"
+  | none => "parse error at end of input"
+
 def parseProgramFromTokens (tokens : List Tok) : Except String Program := do
-  match runParser (Parser.foldl (fun acc decl => decl :: acc) [] parseGdecl) tokens with
+  let decls := Parser.foldl (fun acc decl => decl :: acc) [] parseGdecl
+  match runParser decls tokens with
   | .ok program => .ok (List.reverse program)
-  | .error e => .error e
+  | .error e =>
+      -- The declaration loop backtracks over the declaration that failed, so
+      -- parse that declaration again to report its own error and position.
+      match Parser.run decls (Parser.Stream.mkOfList tokens) with
+      | .ok rest _ =>
+          match Parser.run parseGdecl rest with
+          | .error failed err => .error s!"{streamLocation failed}: {err}"
+          | .ok _ _ => .error s!"{streamLocation rest}: {e}"
+      | .error failed err => .error s!"{streamLocation failed}: {err}"
