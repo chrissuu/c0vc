@@ -1,3 +1,4 @@
+import C0VC.Utils.Literal
 import C0VC.Ast.ElabbedAst
 
 namespace C0VC.TypedAst
@@ -107,8 +108,8 @@ partial def ppExpr : Expr → String
   | .trueLit => "true"
   | .falseLit => "false"
   | .null => "NULL"
-  | .stringLit s => s
-  | .charLit c => toString c
+  | .stringLit s => C0VC.Utils.Literal.showString s
+  | .charLit c => C0VC.Utils.Literal.showChar c
   | .binop op lhs rhs =>
       s!"({ppTypedExpr lhs} {ppBinOp op} {ppTypedExpr rhs})"
   | .ternary test thenBranch elseBranch =>
@@ -219,8 +220,8 @@ partial def ppExprRaw (indentLevel : Nat) : Expr → String
   | .trueLit => s!"{spaces indentLevel}TrueLit"
   | .falseLit => s!"{spaces indentLevel}FalseLit"
   | .null => s!"{spaces indentLevel}Null"
-  | .stringLit s => s!"{spaces indentLevel}StringLit({s})"
-  | .charLit c => s!"{spaces indentLevel}CharLit({c})"
+  | .stringLit s => s!"{spaces indentLevel}StringLit({C0VC.Utils.Literal.showString s})"
+  | .charLit c => s!"{spaces indentLevel}CharLit({C0VC.Utils.Literal.showChar c})"
   | .binop op lhs rhs =>
       s!"{spaces indentLevel}Binop({ppBinOp op},\n{ppTypedExprRaw (indentLevel + 1) lhs},\n{ppTypedExprRaw (indentLevel + 1) rhs}\n{spaces indentLevel})"
   | .ternary test thenBranch elseBranch =>

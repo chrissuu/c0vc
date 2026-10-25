@@ -329,6 +329,16 @@ def tcFunctionSignature (retType : Tau) (params : List Param) : Except String Un
   let _ ← tcReturnType retType
   tcParamTypesSmall params
 
+/-- Where an expression occurs, which decides the contract-only forms it may use. -/
+inductive ExprCtx where
+  /-- Code: no contract-only forms. -/
+  | code
+  /-- `@requires`, `@loop_invariant` and `@assert`: `\length` but not `\result`. -/
+  | contract
+  /-- `@ensures` of a function returning `ret`: `\length` and `\result`. -/
+  | postcondition (ret : Tau)
+deriving Inhabited
+
 /-- Prefix an error message with a source location, unless it already has one. -/
 def locateError (span? : Option C0VC.Utils.SrcSpan.SrcSpan) (msg : String) : String :=
   match span? with
@@ -338,13 +348,13 @@ def locateError (span? : Option C0VC.Utils.SrcSpan.SrcSpan) (msg : String) : Str
   | none => msg
 
 mutual
-partial def tcExpr (senv : SEnv) (fenv : FEnv) (resultType : Option Tau) (mexpr : MarkedExpr) (venv : VEnv) :
+partial def tcExpr (senv : SEnv) (fenv : FEnv) (ctx : ExprCtx) (mexpr : MarkedExpr) (venv : VEnv) :
     Except String C0VC.TypedAst.TypedExpr :=
-  match tcExprCore senv fenv resultType mexpr venv with
+  match tcExprCore senv fenv ctx mexpr venv with
   | .ok te => .ok { te with span := mexpr.span <|> te.span }
   | .error msg => .error (locateError mexpr.span msg)
 
-partial def tcExprCore (senv : SEnv) (fenv : FEnv) (resultType : Option Tau) (mexpr : MarkedExpr) (venv : VEnv) :
+partial def tcExprCore (senv : SEnv) (fenv : FEnv) (ctx : ExprCtx) (mexpr : MarkedExpr) (venv : VEnv) :
     Except String C0VC.TypedAst.TypedExpr := do
   match mexpr.node with
   | .var name =>
@@ -369,19 +379,19 @@ partial def tcExprCore (senv : SEnv) (fenv : FEnv) (resultType : Option Tau) (me
     .ok (mkTExpr (.stringLit s) .string)
 
   | .binop op lhs rhs =>
-    let tlhs ← tcExpr senv fenv resultType lhs venv
-    let trhs ← tcExpr senv fenv resultType rhs venv
+    let tlhs ← tcExpr senv fenv ctx lhs venv
+    let trhs ← tcExpr senv fenv ctx rhs venv
     if binopArgTypesOk op tlhs.tau trhs.tau then
       .ok (mkTExpr (.binop op tlhs trhs) (binopType op))
     else
       .error "binary operator arguments have invalid types"
 
   | .ternary test thenVal elseVal =>
-    let ttest ← tcExpr senv fenv resultType test venv
+    let ttest ← tcExpr senv fenv ctx test venv
     if not (tauEq ttest.tau .bool) then
-      .error "ternary condition must have type Tau.bool"
-    let tthen ← tcExpr senv fenv resultType thenVal venv
-    let telse ← tcExpr senv fenv resultType elseVal venv
+      .error "ternary condition must have type bool"
+    let tthen ← tcExpr senv fenv ctx thenVal venv
+    let telse ← tcExpr senv fenv ctx elseVal venv
     if tauEq tthen.tau telse.tau then
       let _ ← tcSmallType tthen.tau "ternary expression"
       .ok (mkTExpr (.ternary ttest tthen telse) tthen.tau)
@@ -399,34 +409,35 @@ partial def tcExprCore (senv : SEnv) (fenv : FEnv) (resultType : Option Tau) (me
       match fenv.get? fname with
       | none => .error s!"function {fname} used before decl"
       | some info =>
-        let targs ← tcCallArgs senv fenv resultType fname args info.params venv
+        let targs ← tcCallArgs senv fenv ctx fname args info.params venv
         .ok (mkTExpr (.call fname targs) info.retType)
 
   | .length arrayLike =>
-    match resultType with
-    | none =>
+    match ctx with
+    | .code =>
         .error "\\length can only be used in contracts"
-    | some _ =>
-        let tarrayLike ← tcExpr senv fenv resultType arrayLike venv
+    | _ =>
+        let tarrayLike ← tcExpr senv fenv ctx arrayLike venv
         match tarrayLike.tau with
         | .array _ => .ok (mkTExpr (.length tarrayLike) .int)
         | _ => .error "\\length argument must have array type"
   | .result =>
-    match resultType with
-    | some tau => .ok (mkTExpr .result tau)
-    | none => .error "Cannot infer type for annotation-only expression"
+    match ctx with
+    | .postcondition .void => .error "\\result cannot be used in a function that returns void"
+    | .postcondition tau => .ok (mkTExpr .result tau)
+    | _ => .error "\\result can only be used in @ensures"
 
   | .hastag =>
-    .ok (mkTExpr .hastag .bool)
+    .error "\\hastag is not supported"
   | .dot struct field =>
-    let tstruct ← tcExpr senv fenv resultType struct venv
+    let tstruct ← tcExpr senv fenv ctx struct venv
     match tstruct.tau with
     | .struct name =>
       let fieldTau ← lookupField senv name field
       .ok (mkTExpr (.dot tstruct field) fieldTau)
     | _ => .error "left side of field access must have struct type"
   | .arrow structPtr field =>
-    let tstructPtr ← tcExpr senv fenv resultType structPtr venv
+    let tstructPtr ← tcExpr senv fenv ctx structPtr venv
     match tstructPtr.tau with
     | .ptr (.struct name) =>
       let fieldTau ← lookupField senv name field
@@ -437,106 +448,95 @@ partial def tcExprCore (senv : SEnv) (fenv : FEnv) (resultType : Option Tau) (me
     .ok (mkTExpr (.alloc type) (.ptr type))
   | .allocArray type size =>
     let _ ← tcAllocType senv type "alloc_array element type"
-    let tsize ← tcExpr senv fenv resultType size venv
+    let tsize ← tcExpr senv fenv ctx size venv
     if tauEq tsize.tau .int then
       .ok (mkTExpr (.allocArray type tsize) (.array type))
     else
       .error "alloc_array size must have type int"
   | .deref ptr =>
-    let tptr ← tcExpr senv fenv resultType ptr venv
+    let tptr ← tcExpr senv fenv ctx ptr venv
     match tptr.tau with
     | .ptr tau => .ok (mkTExpr (.deref tptr) tau)
     | _ => .error "dereference operand must have pointer type"
   | .arrAccess arr index =>
-    let tarr ← tcExpr senv fenv resultType arr venv
-    let tindex ← tcExpr senv fenv resultType index venv
+    let tarr ← tcExpr senv fenv ctx arr venv
+    let tindex ← tcExpr senv fenv ctx index venv
     if not (tauEq tindex.tau .int) then
       .error "array index must have type int"
     match tarr.tau with
     | .array tau => .ok (mkTExpr (.arrAccess tarr tindex) tau)
     | _ => .error "array access operand must have array type"
 
-partial def tcLValue (senv : SEnv) (fenv : FEnv) (resultType : Option Tau) (mlv : MarkedLValue) (venv : VEnv) :
+partial def tcLValue (senv : SEnv) (fenv : FEnv) (ctx : ExprCtx) (mlv : MarkedLValue) (venv : VEnv) :
     Except String C0VC.TypedAst.TypedLValue :=
-  match tcLValueCore senv fenv resultType mlv venv with
+  match tcLValueCore senv fenv ctx mlv venv with
   | .ok tlv => .ok { tlv with span := mlv.span <|> tlv.span }
   | .error msg => .error (locateError mlv.span msg)
 
-partial def tcLValueCore (senv : SEnv) (fenv : FEnv) (resultType : Option Tau) (mlv : MarkedLValue) (venv : VEnv) :
+partial def tcLValueCore (senv : SEnv) (fenv : FEnv) (ctx : ExprCtx) (mlv : MarkedLValue) (venv : VEnv) :
     Except String C0VC.TypedAst.TypedLValue := do
   match mlv.node with
   | .var name =>
     let info ← tcVarReadable venv name
     .ok (mkTLValue (.var name) info.varType)
   | .deref ptr =>
-    let tptr ← tcLValue senv fenv resultType ptr venv
+    let tptr ← tcLValue senv fenv ctx ptr venv
     match tptr.tau with
     | .ptr tau => .ok (mkTLValue (.deref tptr) tau)
     | _ => .error "dereference lvalue operand must have pointer type"
   | .dot struct field =>
-    let tstruct ← tcLValue senv fenv resultType struct venv
+    let tstruct ← tcLValue senv fenv ctx struct venv
     match tstruct.tau with
     | .struct name =>
         let fieldTau ← lookupField senv name field
         .ok (mkTLValue (.dot tstruct field) fieldTau)
     | _ => .error "left side of field lvalue access must have struct type"
   | .arrow structPtr field =>
-    let tstructPtr ← tcLValue senv fenv resultType structPtr venv
+    let tstructPtr ← tcLValue senv fenv ctx structPtr venv
     match tstructPtr.tau with
     | .ptr (.struct name) =>
         let fieldTau ← lookupField senv name field
         .ok (mkTLValue (.arrow tstructPtr field) fieldTau)
     | _ => .error "left side of arrow lvalue access must have pointer-to-struct type"
   | .arrAccess arr index =>
-    let tarr ← tcLValue senv fenv resultType arr venv
-    let tindex ← tcExpr senv fenv resultType index venv
+    let tarr ← tcLValue senv fenv ctx arr venv
+    let tindex ← tcExpr senv fenv ctx index venv
     if not (tauEq tindex.tau .int) then
       .error "array index must have type int"
     match tarr.tau with
     | .array tau => .ok (mkTLValue (.arrAccess tarr tindex) tau)
     | _ => .error "array lvalue access operand must have array type"
 
-partial def tcCallArgs (senv : SEnv) (fenv : FEnv) (resultType : Option Tau) (fname : String)
+partial def tcCallArgs (senv : SEnv) (fenv : FEnv) (ctx : ExprCtx) (fname : String)
     (args : List MarkedExpr) (params : List Param) (venv : VEnv) :
     Except String (List C0VC.TypedAst.TypedExpr) := do
   match args, params with
   | [], [] => .ok []
   | arg :: restArgs, (expected, _) :: restParams =>
-    let targ ← tcExpr senv fenv resultType arg venv
+    let targ ← tcExpr senv fenv ctx arg venv
     if tauAssignable expected targ.tau then
-      let trest ← tcCallArgs senv fenv resultType fname restArgs restParams venv
+      let trest ← tcCallArgs senv fenv ctx fname restArgs restParams venv
       .ok (coerceNullTo expected targ :: trest)
     else
       .error s!"argument to {fname} must have type {ppTau expected}"
   | _, _ => .error s!"function {fname} called with wrong number of arguments"
 end
 
-def tcExprHasType (senv : SEnv) (fenv : FEnv) (resultType : Option Tau) (mexpr : MarkedExpr) (venv : VEnv)
-    (expected : Tau) (ctx : String) : Except String C0VC.TypedAst.TypedExpr := do
-  let actual ← tcExpr senv fenv resultType mexpr venv
+def tcExprHasType (senv : SEnv) (fenv : FEnv) (ctx : ExprCtx) (mexpr : MarkedExpr) (venv : VEnv)
+    (expected : Tau) (what : String) : Except String C0VC.TypedAst.TypedExpr := do
+  let actual ← tcExpr senv fenv ctx mexpr venv
   if tauAssignable expected actual.tau then
     .ok (coerceNullTo expected actual)
   else
-    .error s!"{ctx} must have type {ppTau expected}"
+    .error s!"{what} must have type {ppTau expected}"
 
-partial def tcAnno (senv : SEnv) (fenv : FEnv) (resultType : Option Tau) (anno : MarkedAnno) (venv : VEnv) :
+partial def tcAnno (senv : SEnv) (fenv : FEnv) (ret : Tau) (anno : MarkedAnno) (venv : VEnv) :
     Except String C0VC.TypedAst.Anno := do
   match anno.node with
-  | .requires e =>
-    let te ← tcExpr senv fenv resultType e venv
-    .ok (.requires te)
-
-  | .ensures e =>
-    let te ← tcExpr senv fenv resultType e venv
-    .ok (.ensures te)
-
-  | .asserts e =>
-    let te ← tcExpr senv fenv resultType e venv
-    .ok (.asserts te)
-
-  | .loopInvariant e =>
-    let te ← tcExpr senv fenv resultType e venv
-    .ok (.loopInvariant te)
+  | .requires e => .ok (.requires (← tcExpr senv fenv .contract e venv))
+  | .ensures e => .ok (.ensures (← tcExpr senv fenv (.postcondition ret) e venv))
+  | .asserts e => .ok (.asserts (← tcExpr senv fenv .contract e venv))
+  | .loopInvariant e => .ok (.loopInvariant (← tcExpr senv fenv .contract e venv))
 
 partial def typedLValueToExpr (tlv : C0VC.TypedAst.TypedLValue) : C0VC.TypedAst.TypedExpr :=
   let node :=
@@ -602,7 +602,7 @@ partial def tcMStmCore (senv : SEnv) (fenv : FEnv) (expectedRet : Tau) (mstm : M
     | .var varName =>
       let varInfo ← tcVarDeclared venv varName
       let _ ← tcSmallType varInfo.varType "assignment target"
-      let tval ← tcExpr senv fenv none val venv
+      let tval ← tcExpr senv fenv .code val venv
       let _ ← tcSmallType tval.tau "assigned expression"
       if tauAssignable varInfo.varType tval.tau then
         let venv' ← markVEnvInitialized venv varName
@@ -610,9 +610,9 @@ partial def tcMStmCore (senv : SEnv) (fenv : FEnv) (expectedRet : Tau) (mstm : M
       else
         .error s!"assigning to {varName} an expression of different type"
     | _ =>
-      let tlhs ← tcLValue senv fenv none lhs venv
+      let tlhs ← tcLValue senv fenv .code lhs venv
       let _ ← tcSmallType tlhs.tau "assignment target"
-      let tval ← tcExpr senv fenv none val venv
+      let tval ← tcExpr senv fenv .code val venv
       let _ ← tcSmallType tval.tau "assigned expression"
       if tauAssignable tlhs.tau tval.tau then
         .ok (.assign tlhs (coerceNullTo tlhs.tau tval), venv)
@@ -620,7 +620,7 @@ partial def tcMStmCore (senv : SEnv) (fenv : FEnv) (expectedRet : Tau) (mstm : M
         .error s!"assigning expression of type {ppTau tval.tau} to lvalue of type {ppTau tlhs.tau}"
 
   | .ifLit test thenBranch elseBranch =>
-    let ttest ← tcExprHasType senv fenv none test venv .bool "if condition"
+    let ttest ← tcExprHasType senv fenv .code test venv .bool "if condition"
     let (tthen, thenEnv) ← tcMStm senv fenv expectedRet thenBranch venv
     let (telse, elseEnv) ← tcMStm senv fenv expectedRet elseBranch venv
     .ok (.ifLit ttest tthen telse, mergeVEnvAfterBranches venv thenEnv elseEnv)
@@ -629,7 +629,7 @@ partial def tcMStmCore (senv : SEnv) (fenv : FEnv) (expectedRet : Tau) (mstm : M
     match step.node with
     | .declare .. => .error "found a declaration in the step of a for loop"
     | _ =>
-      let ttest ← tcExprHasType senv fenv none test venv .bool "while condition"
+      let ttest ← tcExprHasType senv fenv .code test venv .bool "while condition"
       let (tbody, bodyEnv) ← tcMStm senv fenv expectedRet body venv
       let (tstep, _) ← tcMStm senv fenv expectedRet step bodyEnv
       let tbodyWithStep :=
@@ -648,7 +648,7 @@ partial def tcMStmCore (senv : SEnv) (fenv : FEnv) (expectedRet : Tau) (mstm : M
     let (tinit, venvForBody) ←
       match init with
       | some initVal =>
-        let tinit ← tcExpr senv fenv none initVal venv
+        let tinit ← tcExpr senv fenv .code initVal venv
         let _ ← tcSmallType tinit.tau "initializer"
         if not (tauAssignable varType tinit.tau) then
           .error s!"assigning to {varName} an expression of different type"
@@ -663,9 +663,9 @@ partial def tcMStmCore (senv : SEnv) (fenv : FEnv) (expectedRet : Tau) (mstm : M
     | none =>
       tcMStm senv fenv expectedRet { node := .assign lhs value, span := mstm.span } venv
     | some binop =>
-      let tlhs ← tcLValue senv fenv none lhs venv
+      let tlhs ← tcLValue senv fenv .code lhs venv
       let _ ← tcSmallType tlhs.tau "assignment target"
-      let tvalue ← tcExpr senv fenv none value venv
+      let tvalue ← tcExpr senv fenv .code value venv
       let _ ← tcSmallType tvalue.tau "assigned expression"
       let (_, wrap, tlhs') := materializeAsopLValue 0 tlhs
       let lhsExpr := typedLValueToExpr tlhs'
@@ -680,7 +680,7 @@ partial def tcMStmCore (senv : SEnv) (fenv : FEnv) (expectedRet : Tau) (mstm : M
   | .ret valOpt =>
     match valOpt with
     | some val =>
-      let tval ← tcExpr senv fenv none val venv
+      let tval ← tcExpr senv fenv .code val venv
       if tauEq tval.tau .void then
         .error "cannot return a void type as a value of a return statement"
       else if not (tauIsSmall tval.tau) then
@@ -701,7 +701,7 @@ partial def tcMStmCore (senv : SEnv) (fenv : FEnv) (expectedRet : Tau) (mstm : M
     .ok (.seq tfirst trest, venv'')
 
   | .expr e =>
-    let te ← tcExpr senv fenv none e venv
+    let te ← tcExpr senv fenv .code e venv
     if not (tauEq te.tau .void) then
       let _ ← tcSmallType te.tau "expression statement"
     match e.node with
@@ -712,18 +712,18 @@ partial def tcMStmCore (senv : SEnv) (fenv : FEnv) (expectedRet : Tau) (mstm : M
       .ok (.expr te, venv)
 
   | .assert test =>
-    let ttest ← tcExprHasType senv fenv none test venv .bool "assert condition"
+    let ttest ← tcExprHasType senv fenv .code test venv .bool "assert condition"
     .ok (.assert ttest, venv)
 
   | .error e =>
-    let te ← tcExpr senv fenv none e venv
+    let te ← tcExpr senv fenv .code e venv
     .ok (.error te, venv)
 
   | .nop =>
     .ok (.nop, venv)
 
   | .annotation a =>
-    let ta ← tcAnno senv fenv (some expectedRet) a venv
+    let ta ← tcAnno senv fenv expectedRet a venv
     .ok (.annotation ta, venv)
 
 end
@@ -782,7 +782,7 @@ def tcFunctionDef (structs : List (String × List Field)) (senv : SEnv) (fenv : 
       .ok (tmstm :: acc, venv'))
     ([], venv)
   let tannotations ← fdefn.annotations.mapM (fun anno =>
-    tcAnno senv fenv (some fdefn.retType) anno venv)
+    tcAnno senv fenv fdefn.retType anno venv)
   let tbody := tbodyRev.reverse
   let _ ← tcReturnedValuesHaveType fdefn.retType tbody
   if typedBodyGuaranteedReturn tbody || tauEq fdefn.retType .void then
@@ -795,7 +795,7 @@ def tcGDecl (structs : List (String × List Field)) (senv : SEnv) (fenv : FEnv) 
       let _ ← tcFunctionSignature retType params
       if external then
         let venv := params.foldl (fun env (varType, name) => insertVEnv env name varType true) {}
-        let tannotations ← annotations.mapM (fun anno => tcAnno senv fenv (some retType) anno venv)
+        let tannotations ← annotations.mapM (fun anno => tcAnno senv fenv retType anno venv)
         .ok (some { retType, fname, params, body := [], annotations := tannotations, structs := structs, external := true })
       else
         .ok none

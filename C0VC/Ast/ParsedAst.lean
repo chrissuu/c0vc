@@ -5,6 +5,7 @@ Author(s):
   ~ Chris Su <chrjs@cmu.edu>
 -/
 
+import C0VC.Utils.Literal
 import C0VC.Utils.SrcSpan
 
 open C0VC.Utils.SrcSpan
@@ -234,8 +235,8 @@ partial def ppExpr : Expr → String
   | .trueLit => "true"
   | .falseLit => "false"
   | .null => "NULL"
-  | .stringLit s => s
-  | .charLit c => toString c
+  | .stringLit s => C0VC.Utils.Literal.showString s
+  | .charLit c => C0VC.Utils.Literal.showChar c
   | .unop op operand =>
       s!"{ppUnOp op}({ppMarkedExpr operand})"
   | .binop op lhs rhs =>
@@ -361,7 +362,7 @@ def ppGDecl : GDecl → String
   | .sdefn name fields =>
       s!"struct {name} \{\n{ppFields fields}\n};"
   | .fdecl ret id params annotations =>
-      s!"{ppAnnos annotations}\{\n}{ppTau ret} {id}{ppParams params};"
+      s!"{ppAnnos annotations}\n{ppTau ret} {id}{ppParams params};"
   | .fdefn ret id params stms annotations =>
       if stms.isEmpty then
         s!"{ppAnnos annotations}\n{ppTau ret} {id}{ppParams params} \{\n}"

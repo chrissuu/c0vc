@@ -48,11 +48,6 @@ structure FnInfo where
 
 abbrev FnEnv := Std.HashMap String FnInfo
 
-partial def countUnopOfType (acc : Nat) (type : UnOp) (mexp : MarkedExpr) :=
-  match mexp.node with
-  | .unop type' mexp' => if type = type' then countUnopOfType (acc + 1) type mexp' else (acc, mexp)
-  | _ => (acc, mexp)
-
 def mkElabExpr (node : Expr) (span : Option SrcSpan) : MarkedExpr :=
   MarkedExpr.mk node span
 
@@ -105,24 +100,16 @@ partial def elabMExpr (env : Env) (mexp : MarkedExpr) : Except String MarkedExpr
       .ok <| mkElabExpr (.binop op lhs' rhs') mexp.span
   | .unop op mexp' =>
     match op with
+    -- Each operator is elaborated separately, even when they cancel, so the
+    -- typechecker still sees that the operand of `!` is a bool and of `~` an int.
     | .bang =>
-      let (numBangs, reducedMexp) := countUnopOfType 1 .bang mexp'
-      let reducedMexp' ← elabMExpr env reducedMexp
-      if numBangs % 2 = 0 then
-        .ok <| mkElabExpr reducedMexp'.node mexp.span
-      else
-        .ok <| mkElabExpr
-          (.ternary reducedMexp' (mkElabExpr .falseLit mexp.span) (mkElabExpr .trueLit mexp.span))
-          mexp.span
+      let operand ← elabMExpr env mexp'
+      .ok <| mkElabExpr
+        (.ternary operand (mkElabExpr .falseLit mexp.span) (mkElabExpr .trueLit mexp.span))
+        mexp.span
     | .bitNot =>
-      let (numBitNot, reducedMexp) := countUnopOfType 1 .bitNot mexp'
-      let reducedMexp' ← elabMExpr env reducedMexp
-      if numBitNot % 2 = 0 then
-        .ok <| mkElabExpr reducedMexp'.node mexp.span
-      else
-        .ok <| mkElabExpr
-          (.binop .xor reducedMexp' (mkElabExpr (.intLit (-1)) mexp.span))
-          mexp.span
+      let operand ← elabMExpr env mexp'
+      .ok <| mkElabExpr (.binop .xor operand (mkElabExpr (.intLit (-1)) mexp.span)) mexp.span
     | .negative =>
       match mexp'.node with
       | .intLit n => .ok <| mkElabExpr (.intLit (-n)) mexp.span
