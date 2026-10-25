@@ -31,10 +31,4 @@ def spanCoverOpt (startSpan? endSpan? : Option SrcSpan) : Option SrcSpan :=
   | none, some endSpan => some endSpan
   | none, none => none
 
-def spanCover3Opt (s1? s2? s3? : Option SrcSpan) : Option SrcSpan :=
-  spanCoverOpt (spanCoverOpt s1? s2?) s3?
-
-def spanCover4Opt (s1? s2? s3? s4? : Option SrcSpan) : Option SrcSpan :=
-  spanCoverOpt (spanCover3Opt s1? s2? s3?) s4?
-
 end C0VC.Utils.SrcSpan

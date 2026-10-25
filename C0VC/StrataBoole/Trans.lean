@@ -36,7 +36,6 @@ abbrev CExpr := C0VC.TypedAst.TypedExpr
 abbrev CLValue := C0VC.TypedAst.TypedLValue
 abbrev CStm := C0VC.TypedAst.Stm
 
-instance : Inhabited CExpr := ⟨{ node := .null, tau := .null }⟩
 
 structure Config where
   intModel : IntModel := .bv32
@@ -611,16 +610,6 @@ end
 
 /-! ## Statements -/
 
-private partial def lvalueToExpr (lv : CLValue) : CExpr :=
-  let node : C0VC.TypedAst.Expr :=
-    match lv.node with
-    | .var name => .var name
-    | .deref ptr => .deref (lvalueToExpr ptr)
-    | .dot struct field => .dot (lvalueToExpr struct) field
-    | .arrow structPtr field => .arrow (lvalueToExpr structPtr) field
-    | .arrAccess arr index => .arrAccess (lvalueToExpr arr) index
-  { node, tau := lv.tau, span := lv.span }
-
 /-- Split the loop invariants that lead a loop body from the rest of the body. -/
 private partial def peelInvariants : CStm → List CExpr × CStm
   | .annotation (.loopInvariant inv) => ([inv], .nop)
@@ -632,17 +621,6 @@ private partial def peelInvariants : CStm → List CExpr × CStm
           (invs ++ moreInvs, rest')
       | _ => (invs, .seq first' rest)
   | stm => ([], stm)
-
-private partial def assignedVars : CStm → List String
-  | .assign lhs _ =>
-      match lhs.node with
-      | .var name => [name]
-      | _ => []
-  | .ifLit _ thenBranch elseBranch => assignedVars thenBranch ++ assignedVars elseBranch
-  | .whileLit _ body => assignedVars body
-  | .seq first rest => assignedVars first ++ assignedVars rest
-  | .declare _ _ _ body => assignedVars body
-  | _ => []
 
 private partial def declaredIn : Stmt → List String
   | .declare name _ => [name]
@@ -747,7 +725,7 @@ partial def lowerAssign (lhs : CLValue) (val : CExpr) : M (List Stmt) := do
   | _ => do
       if isStructTau lhs.tau then
         fail "struct values cannot be assigned" lhs.span
-      let (pa, heap, ref, elem) ← lowerAddr (lvalueToExpr lhs)
+      let (pa, heap, ref, elem) ← lowerAddr lhs.toExpr
       let (pv, v) ← lowerExpr val
       let (pa, ref, elem) ←
         if hasCall pv then do
@@ -841,7 +819,7 @@ private def lowerBody (usesHeap : Bool) (f : C0VC.TypedAst.FunctionDef) (sig : F
   resetProc f.fname
   withScope do
     let body := bodyStm f.body
-    let assigned := assignedVars body
+    let assigned := body.assignedVars
     let mut prelude := #[]
     for (tau, boogieName, c0Name) in sig.params do
       if assigned.contains c0Name then
@@ -990,42 +968,6 @@ The function body is
 - uninterpreted otherwise, including for recursive functions.
 -/
 
-private def exprChildren (e : CExpr) : List CExpr :=
-  match e.node with
-  | .binop _ l r => [l, r]
-  | .ternary c t f => [c, t, f]
-  | .call _ args => args
-  | .length a | .deref a | .dot a _ | .arrow a _ => [a]
-  | .allocArray _ n => [n]
-  | .arrAccess a i => [a, i]
-  | _ => []
-
-private partial def exprAny (p : CExpr → Bool) (e : CExpr) : Bool :=
-  p e || (exprChildren e).any (exprAny p)
-
-private partial def exprCallees (e : CExpr) : List String :=
-  (match e.node with
-    | .call fname _ => [fname]
-    | _ => []) ++ (exprChildren e).flatMap exprCallees
-
-private def annoExpr : C0VC.TypedAst.Anno → CExpr
-  | .requires e | .ensures e | .asserts e | .loopInvariant e => e
-
-/-- Every expression a statement evaluates, including in nested statements. -/
-private partial def stmExprs : CStm → List CExpr
-  | .assign lhs val =>
-      (match lhs.node with
-        | .var _ => []
-        | _ => [lvalueToExpr lhs]) ++ [val]
-  | .ifLit c t f => [c] ++ stmExprs t ++ stmExprs f
-  | .whileLit c body => [c] ++ stmExprs body
-  | .ret v => v.toList
-  | .seq a b => stmExprs a ++ stmExprs b
-  | .declare _ _ init body => init.toList ++ stmExprs body
-  | .expr e | .assert e | .error e => [e]
-  | .annotation a => [annoExpr a]
-  | .nop => []
-
 private partial def stmWritesMemory : CStm → Bool
   | .assign lhs _ =>
       match lhs.node with
@@ -1045,9 +987,9 @@ private def isAlloc (e : CExpr) : Bool :=
 /-- Functions that neither write memory nor allocate, directly or through calls. -/
 def pureFunctions (program : C0VC.TypedAst.Program) : Std.HashSet String := Id.run do
   let info := program.map fun f =>
-    let exprs := f.body.flatMap stmExprs
-    let direct := !f.external && (f.body.any stmWritesMemory || exprs.any (exprAny isAlloc))
-    (f.fname, direct, exprs.flatMap exprCallees)
+    let exprs := f.body.flatMap C0VC.TypedAst.Stm.exprs
+    let direct := !f.external && (f.body.any stmWritesMemory || exprs.any (·.any isAlloc))
+    (f.fname, direct, exprs.flatMap C0VC.TypedAst.TypedExpr.callees)
   let mut pureFns : Std.HashSet String :=
     Std.HashSet.ofList (info.filterMap fun (name, direct, _) => if direct then none else some name)
   for _ in [0:program.length + 1] do
@@ -1058,7 +1000,7 @@ def pureFunctions (program : C0VC.TypedAst.Program) : Std.HashSet String := Id.r
   return pureFns
 
 private partial def stmAnnoExprs : CStm → List CExpr
-  | .annotation a => [annoExpr a]
+  | .annotation a => [a.expr]
   | .ifLit _ t f => stmAnnoExprs t ++ stmAnnoExprs f
   | .whileLit _ body => stmAnnoExprs body
   | .seq a b => stmAnnoExprs a ++ stmAnnoExprs b
@@ -1072,9 +1014,9 @@ and the pure functions their bodies call.
 def contractFunctions (program : C0VC.TypedAst.Program) (pureFns : Std.HashSet String) :
     Std.HashSet String := Id.run do
   let callees : Std.HashMap String (List String) :=
-    program.foldl (fun acc f => acc.insert f.fname ((f.body.flatMap stmExprs).flatMap exprCallees)) {}
+    program.foldl (fun acc f => acc.insert f.fname ((f.body.flatMap C0VC.TypedAst.Stm.exprs).flatMap C0VC.TypedAst.TypedExpr.callees)) {}
   let seeds := program.flatMap fun f =>
-    ((f.annotations.map annoExpr) ++ f.body.flatMap stmAnnoExprs).flatMap exprCallees
+    ((f.annotations.map C0VC.TypedAst.Anno.expr) ++ f.body.flatMap stmAnnoExprs).flatMap C0VC.TypedAst.TypedExpr.callees
   let mut needed : Std.HashSet String := {}
   let mut work := seeds.filter pureFns.contains
   for _ in [0:program.length + 1] do
@@ -1093,7 +1035,7 @@ private def orderByContractCalls (program : C0VC.TypedAst.Program) : List C0VC.T
   for _ in [0:program.length + 1] do
     for f in program do
       if visited.contains f.fname then continue
-      let deps := (f.annotations.map annoExpr).flatMap exprCallees
+      let deps := (f.annotations.map C0VC.TypedAst.Anno.expr).flatMap C0VC.TypedAst.TypedExpr.callees
       if deps.all (fun d => visited.contains d || d == f.fname || !byName.contains d) then
         visited := visited.insert f.fname
         order := order.push f
@@ -1288,7 +1230,7 @@ private def programUsesStrings (program : C0VC.TypedAst.Program) : Bool :=
   program.any fun f =>
     isString f.retType || f.params.any (isString ·.1) ||
     f.body.any (fun stm => (stmDeclTaus stm).any isString ||
-      (stmExprs stm).any (exprAny (isString ·.tau)))
+      (C0VC.TypedAst.Stm.exprs stm).any (·.any (isString ·.tau)))
 
 def runWithConfig (cfg : Config) (program : C0VC.TypedAst.Program) : Except String Program := do
   let structs := program.flatMap (·.structs)

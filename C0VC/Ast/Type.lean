@@ -7,17 +7,7 @@ open Std.HashMap
 
 namespace C0VC.Typechecker
 
-def tauEq : Tau → Tau → Bool
-  | .int, .int => true
-  | .char, .char => true
-  | .string, .string => true
-  | .bool, .bool => true
-  | .void, .void => true
-  | .struct lhs, .struct rhs => lhs == rhs
-  | .ptr lhs, .ptr rhs => tauEq lhs rhs
-  | .array lhs, .array rhs => tauEq lhs rhs
-  | .null, .null => true
-  | _, _ => false
+def tauEq (lhs rhs : Tau) : Bool := lhs == rhs
 
 def tauIsRef : Tau → Bool
   | .ptr _ => true
@@ -144,15 +134,6 @@ structure VarInfo where
 
 abbrev VEnv := Std.HashMap String VarInfo
 
-instance : Inhabited C0VC.TypedAst.TypedExpr where
-  default := { node := .intLit 0, tau := .int }
-
-instance : Inhabited C0VC.TypedAst.TypedLValue where
-  default := { node := .var "$c0vc_default", tau := .int }
-
-instance : Inhabited C0VC.TypedAst.Stm where
-  default := .nop
-
 def insertVEnv (venv : VEnv) (name : String) (varType : Tau) (initialized : Bool) : VEnv :=
   venv.insert name { name := name, varType := varType, initialized := initialized }
 
@@ -203,17 +184,7 @@ def tcIntLitRange (n : Int) : Except String Unit :=
     .error s!"integer literal {n} is outside int range"
 
 
--- TODO: this func, and many others (?) are duplicated across the Ast modules, let's deduplicate`
-def ppTau : Tau → String
-  | .int => "int"
-  | .char => "char"
-  | .string => "string"
-  | .bool => "bool"
-  | .void => "void"
-  | .struct name => s!"struct {name}"
-  | .ptr tau => s!"{ppTau tau}*"
-  | .array tau => s!"{ppTau tau}[]"
-  | .null => "null"
+def ppTau : Tau → String := Print.ppTau
 
 partial def tauContainsVoidOrString : Tau → Bool
   | .void | .string => true
@@ -538,16 +509,6 @@ partial def tcAnno (senv : SEnv) (fenv : FEnv) (ret : Tau) (anno : MarkedAnno) (
   | .asserts e => .ok (.asserts (← tcExpr senv fenv .contract e venv))
   | .loopInvariant e => .ok (.loopInvariant (← tcExpr senv fenv .contract e venv))
 
-partial def typedLValueToExpr (tlv : C0VC.TypedAst.TypedLValue) : C0VC.TypedAst.TypedExpr :=
-  let node :=
-    match tlv.node with
-    | .var name => .var name
-    | .deref ptr => .deref (typedLValueToExpr ptr)
-    | .dot struct field => .dot (typedLValueToExpr struct) field
-    | .arrow structPtr field => .arrow (typedLValueToExpr structPtr) field
-    | .arrAccess arr index => .arrAccess (typedLValueToExpr arr) index
-  { node := node, tau := tlv.tau }
-
 def assignOpToBinOp : AssignOp → Option BinOp
   | .assign => none
   | .plusEq => some .plus
@@ -579,7 +540,7 @@ partial def materializeAsopLValue (next : Nat) (tlv : C0VC.TypedAst.TypedLValue)
     let (next', wrapArr, arr') := materializeAsopLValue next arr
     let baseName := s!"$c0vc_asop_base_{next'}"
     let indexName := s!"$c0vc_asop_idx_{next' + 1}"
-    let baseExpr := typedLValueToExpr arr'
+    let baseExpr := arr'.toExpr
     let baseLValue := mkTLValue (.var baseName) arr.tau
     let indexExpr := mkTExpr (.var indexName) .int
     let tlv' := { tlv with node := .arrAccess baseLValue indexExpr }
@@ -625,18 +586,10 @@ partial def tcMStmCore (senv : SEnv) (fenv : FEnv) (expectedRet : Tau) (mstm : M
     let (telse, elseEnv) ← tcMStm senv fenv expectedRet elseBranch venv
     .ok (.ifLit ttest tthen telse, mergeVEnvAfterBranches venv thenEnv elseEnv)
 
-  | .whileLit test body step =>
-    match step.node with
-    | .declare .. => .error "found a declaration in the step of a for loop"
-    | _ =>
-      let ttest ← tcExprHasType senv fenv .code test venv .bool "while condition"
-      let (tbody, bodyEnv) ← tcMStm senv fenv expectedRet body venv
-      let (tstep, _) ← tcMStm senv fenv expectedRet step bodyEnv
-      let tbodyWithStep :=
-        match tstep with
-        | .nop => tbody
-        | _ => .seq tbody tstep
-      .ok (.whileLit ttest tbodyWithStep, venv)
+  | .whileLit test body =>
+    let ttest ← tcExprHasType senv fenv .code test venv .bool "while condition"
+    let (tbody, _) ← tcMStm senv fenv expectedRet body venv
+    .ok (.whileLit ttest tbody, venv)
 
   | .declare varName varType init body =>
     if venv.contains varName then
@@ -668,7 +621,7 @@ partial def tcMStmCore (senv : SEnv) (fenv : FEnv) (expectedRet : Tau) (mstm : M
       let tvalue ← tcExpr senv fenv .code value venv
       let _ ← tcSmallType tvalue.tau "assigned expression"
       let (_, wrap, tlhs') := materializeAsopLValue 0 tlhs
-      let lhsExpr := typedLValueToExpr tlhs'
+      let lhsExpr := tlhs'.toExpr
       if not (binopArgTypesOk binop lhsExpr.tau tvalue.tau) then
         .error "compound assignment arguments have invalid types"
       let rhsTau := binopType binop
@@ -869,39 +822,17 @@ def mergeDeclarations (program : C0VC.TypedAst.Program) : C0VC.TypedAst.Program 
     (([] : List C0VC.TypedAst.FunctionDef), ({} : Std.HashSet String))
   keptRev.reverse
 
-partial def typedExprVars (e : C0VC.TypedAst.TypedExpr) : List String :=
-  match e.node with
-  | .var name => [name]
-  | .binop _ l r => typedExprVars l ++ typedExprVars r
-  | .ternary c t f => typedExprVars c ++ typedExprVars t ++ typedExprVars f
-  | .call _ args => args.flatMap typedExprVars
-  | .length a | .deref a | .dot a _ | .arrow a _ => typedExprVars a
-  | .allocArray _ size => typedExprVars size
-  | .arrAccess a i => typedExprVars a ++ typedExprVars i
-  | _ => []
-
-partial def typedStmAssignedVars : C0VC.TypedAst.Stm → List String
-  | .assign lhs _ =>
-      match lhs.node with
-      | .var name => [name]
-      | _ => []
-  | .ifLit _ thenBranch elseBranch => typedStmAssignedVars thenBranch ++ typedStmAssignedVars elseBranch
-  | .whileLit _ body => typedStmAssignedVars body
-  | .seq first rest => typedStmAssignedVars first ++ typedStmAssignedVars rest
-  | .declare _ _ _ body => typedStmAssignedVars body
-  | _ => []
-
 /--
 "The body of a function may not assign to any variable that occurs in an
 @ensures clause" (C0 reference, section 13.1). Checked after prototypes are
 merged, so the contracts of every declaration are covered.
 -/
 def tcEnsuresNotAssigned (f : C0VC.TypedAst.FunctionDef) : Except String Unit := do
-  let assigned := f.body.flatMap typedStmAssignedVars
+  let assigned := f.body.flatMap C0VC.TypedAst.Stm.assignedVars
   for anno in f.annotations do
     match anno with
     | .ensures e =>
-        match (typedExprVars e).find? assigned.contains with
+        match e.vars.find? assigned.contains with
         | some name =>
             throw (locateError e.span
               s!"{f.fname} assigns {name}, which occurs in an @ensures clause; C0 does not allow assigning to variables in a postcondition")

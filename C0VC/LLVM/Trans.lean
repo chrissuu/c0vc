@@ -15,9 +15,6 @@ abbrev SEnv := Std.HashMap String (List C0VC.TypedAst.Field)
 
 private def resultTempName : String := "$c0vc_result"
 
-instance : Inhabited C0VC.TypedAst.TypedExpr where
-  default := { node := .intLit 0, tau := .int }
-
 -- TODO: consider wrapping env meta things into here / change to StateM
 structure Env where
   tempEnv : TempEnv
@@ -81,15 +78,6 @@ def translateBinOp (op: C0VC.TypedAst.BinOp) : Tree.BinOp :=
   | .bitOr => .bitOr
   | .shl => .shl
   | .shr => .shr
-
-def tauOfBinOp : C0VC.TypedAst.BinOp → Tree.Tau
-  | .lt
-  | .lte
-  | .gt
-  | .gte
-  | .eq
-  | .neq => .bool
-  | _ => .int
 
 def exprAlreadyMaterialized : Tree.Expr → Bool
   | .const .. | .temp _ => true
@@ -240,16 +228,6 @@ partial def translateExpr
           (cmdsStructPtr ++ [.move temp expr], .temp temp, env', tc'', lc')
       | _ => panic! "[Error] arrow expected pointer-to-struct type"
 
-partial def typedLValueToExpr (tlv : C0VC.TypedAst.TypedLValue) : C0VC.TypedAst.TypedExpr :=
-  let node :=
-    match tlv.node with
-    | .var name => .var name
-    | .deref ptr => .deref (typedLValueToExpr ptr)
-    | .dot struct field => .dot (typedLValueToExpr struct) field
-    | .arrow structPtr field => .arrow (typedLValueToExpr structPtr) field
-    | .arrAccess arr index => .arrAccess (typedLValueToExpr arr) index
-  { node := node, tau := tlv.tau }
-
 partial def translateLValueExpr
   (senv : SEnv)
   (tlv : C0VC.TypedAst.TypedLValue)
@@ -267,10 +245,10 @@ partial def translateLValueExpr
 
   -- lvalues and its side effects are computed first before doing rhs.
   | .deref ptr =>
-      let (cmdsPtr, transPtr, env', tc', lc') := translateExpr senv (typedLValueToExpr ptr) env tc lc
+      let (cmdsPtr, transPtr, env', tc', lc') := translateExpr senv ptr.toExpr env tc lc
       (cmdsPtr, .deref transPtr (translateTau tlv.tau), env', tc', lc')
   | .arrAccess arr index =>
-      let (cmdsArr, transArr, env', tc', lc') := translateExpr senv (typedLValueToExpr arr) env tc lc
+      let (cmdsArr, transArr, env', tc', lc') := translateExpr senv arr.toExpr env tc lc
       let (cmdsIndex, transIndex, env'', tc'', lc'') := translateExpr senv index env' tc' lc'
       (cmdsArr ++ cmdsIndex, .arrAccess transArr transIndex (translateTau tlv.tau), env'', tc'', lc'')
   | .dot struct field =>

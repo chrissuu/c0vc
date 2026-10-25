@@ -622,12 +622,6 @@ def parseSimpleStm : P MarkedStm := do
     | none => some semiTok.span
   pure { node := s.node, span := span }
 
-def seqOf (stms : List MarkedStm) : MarkedStm :=
-  match stms with
-  | [] => { node := .nop, span := none }
-  | s :: rest =>
-    rest.foldl (fun acc nxt => { node := .seq acc nxt, span := none }) s
-
 def foldStms (stms : List MarkedStm) (span : Option SrcSpan := none) : MarkedStm :=
   match stms with
   | [] => { node := .nop, span := span }
@@ -735,7 +729,7 @@ partial def parseWhileStm : P MarkedStm := do
   let cond ← parseExpr
   let _ ← expectKindTokMsg (only .rParen) "expected ')' after while condition"
   let body ← parseLoopBody
-  pure { node := .whileLit cond body { node := .nop, span := none }, span := some whileTok.span }
+  pure { node := .whileLit cond body, span := some whileTok.span }
 
 partial def parseForStm : P MarkedStm := do
   let forTok ← expectKindTokMsg (only .kwFor) "expected 'for'"
@@ -862,15 +856,6 @@ def runParser {a : Type} (p : P a) (tokens : List Tok) : Except String a :=
   match Parser.run (p <* optional eofTok <* endOfInput) (Parser.Stream.mkOfList tokens) with
   | .ok _ x => .ok x
   | .error _ err => .error s!"parse error: {err}"
-
-def parseExprFromTokens (tokens : List Tok) : Except String MarkedExpr :=
-  runParser parseExpr tokens
-
-def parseStmFromTokens (tokens : List Tok) : Except String MarkedStm :=
-  runParser parseStm tokens
-
-def parseGdeclFromTokens (tokens : List Tok) : Except String GDecl :=
-  runParser parseGdecl tokens
 
 private def streamLocation (s : TokStream) : String :=
   match s.input.head? with

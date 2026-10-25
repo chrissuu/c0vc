@@ -117,28 +117,7 @@ The SrcLoc ptr is updated in these instances: Tabs, Return, etc.
 
 -/
 
-def isHexLitSeed c := c == '0'
-
-def isIntLitSeed c := Char.isDigit c
-
 def isIdentSeed c := Char.isAlpha c || c == '_'
-
-def isStringLitSeed c := c == '\"'
-
-def isCharLitSeed c := c == '\''
-
-def isCommentSeed c := c == '/'
-
-def isContractBuiltinSeed c := c == '\\'
-
-def isSeed c :=
-  isHexLitSeed c
-  || isIntLitSeed c
-  || isIdentSeed c
-  || isStringLitSeed c
-  || isCharLitSeed c
-  || isCommentSeed c
-  || isContractBuiltinSeed c
 
 def isHexDigit (c : Char) : Bool :=
   Char.isDigit c

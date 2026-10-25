@@ -56,7 +56,7 @@ inductive Tau where
   | ptr (tau : Tau)
   | array (tau : Tau)
   | null
-deriving Inhabited
+deriving Inhabited, BEq
 
 mutual
 inductive Expr where
@@ -115,7 +115,7 @@ inductive Stm where
   | assign (lhs : MarkedLValue) (val : MarkedExpr)
   | asop (lhs : MarkedLValue) (op : AssignOp) (value : MarkedExpr)
   | ifLit (test : MarkedExpr) (thenBranch : MarkedStm) (elseBranch : MarkedStm)
-  | whileLit (test : MarkedExpr) (body : MarkedStm) (step : MarkedStm)
+  | whileLit (test : MarkedExpr) (body : MarkedStm)
   | ret (valOpt : Option MarkedExpr)
   | seq (first : MarkedStm) (rest : MarkedStm)
   | declare (varName : String) (type : Tau) (init : Option MarkedExpr) (body : MarkedStm)
@@ -288,12 +288,8 @@ partial def ppStm : Stm → String
         s!"if ({ppMarkedExpr cond}) \{\n{thenStr}\n}"
       else
         s!"if ({ppMarkedExpr cond}) \{\n{thenStr}\n} else \{\n{indent elseStr}\n}"
-  | .whileLit cond body step =>
-      let bodyStr :=
-        match step.node with
-        | .nop => ppMarkedStm body
-        | _ => s!"{ppMarkedStm body}\n{ppMarkedStm step}"
-      s!"while ({ppMarkedExpr cond}) \{\n{indent bodyStr}\n}"
+  | .whileLit cond body =>
+      s!"while ({ppMarkedExpr cond}) \{\n{indent (ppMarkedStm body)}\n}"
   | .annotation a => s!"{ppMarkedAnno a}"
 
 partial def ppMarkedStm (s : MarkedStm) : String :=
@@ -412,8 +408,8 @@ partial def ppStmRaw (indentLevel : Nat) : Stm → String
       s!"{spaces indentLevel}Seq(\n{ppMarkedStmRaw (indentLevel + 1) s1},\n{ppMarkedStmRaw (indentLevel + 1) s2}\n{spaces indentLevel})"
   | .ifLit cond thenBranch elseBranch =>
       s!"{spaces indentLevel}If(\n{ppMarkedExprRaw (indentLevel + 1) cond},\n{ppMarkedStmRaw (indentLevel + 1) thenBranch},\n{ppMarkedStmRaw (indentLevel + 1) elseBranch}\n{spaces indentLevel})"
-  | .whileLit cond body step =>
-      s!"{spaces indentLevel}While(\n{ppMarkedExprRaw (indentLevel + 1) cond},\n{ppMarkedStmRaw (indentLevel + 1) body},\n{ppMarkedStmRaw (indentLevel + 1) step}\n{spaces indentLevel})"
+  | .whileLit cond body =>
+      s!"{spaces indentLevel}While(\n{ppMarkedExprRaw (indentLevel + 1) cond},\n{ppMarkedStmRaw (indentLevel + 1) body}\n{spaces indentLevel})"
   | .annotation a =>
       s!"{spaces indentLevel}Annotation(\n{ppAnnoRaw (indentLevel + 1) a.node}\n{spaces indentLevel})"
 

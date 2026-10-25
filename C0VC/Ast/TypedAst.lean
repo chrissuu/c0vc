@@ -85,6 +85,80 @@ structure FunctionDef where
 
 abbrev Program := List FunctionDef
 
+instance : Inhabited TypedExpr := ⟨{ node := .intLit 0, tau := .int }⟩
+instance : Inhabited TypedLValue := ⟨{ node := .var "", tau := .int }⟩
+instance : Inhabited Stm := ⟨.nop⟩
+
+/-! ## Traversals shared by the typechecker and the backends -/
+
+/-- The expression reading the location an lvalue denotes. -/
+partial def TypedLValue.toExpr (lv : TypedLValue) : TypedExpr :=
+  let node : Expr :=
+    match lv.node with
+    | .var name => .var name
+    | .deref ptr => .deref ptr.toExpr
+    | .dot struct field => .dot struct.toExpr field
+    | .arrow structPtr field => .arrow structPtr.toExpr field
+    | .arrAccess arr index => .arrAccess arr.toExpr index
+  { node, tau := lv.tau, span := lv.span }
+
+/-- The immediate subexpressions of an expression. -/
+def TypedExpr.children (e : TypedExpr) : List TypedExpr :=
+  match e.node with
+  | .binop _ l r => [l, r]
+  | .ternary c t f => [c, t, f]
+  | .call _ args => args
+  | .length a | .deref a | .dot a _ | .arrow a _ => [a]
+  | .allocArray _ n => [n]
+  | .arrAccess a i => [a, i]
+  | _ => []
+
+/-- Whether `p` holds for the expression or any of its subexpressions. -/
+partial def TypedExpr.any (p : TypedExpr → Bool) (e : TypedExpr) : Bool :=
+  p e || e.children.any (·.any p)
+
+/-- Variables an expression reads. -/
+partial def TypedExpr.vars (e : TypedExpr) : List String :=
+  (match e.node with
+    | .var name => [name]
+    | _ => []) ++ e.children.flatMap (·.vars)
+
+/-- Functions an expression calls. -/
+partial def TypedExpr.callees (e : TypedExpr) : List String :=
+  (match e.node with
+    | .call fname _ => [fname]
+    | _ => []) ++ e.children.flatMap (·.callees)
+
+def Anno.expr : Anno → TypedExpr
+  | .requires e | .ensures e | .asserts e | .loopInvariant e => e
+
+/-- Local variables a statement assigns to directly. -/
+partial def Stm.assignedVars : Stm → List String
+  | .assign lhs _ =>
+      match lhs.node with
+      | .var name => [name]
+      | _ => []
+  | .ifLit _ thenBranch elseBranch => thenBranch.assignedVars ++ elseBranch.assignedVars
+  | .whileLit _ body => body.assignedVars
+  | .seq first rest => first.assignedVars ++ rest.assignedVars
+  | .declare _ _ _ body => body.assignedVars
+  | _ => []
+
+/-- Every expression a statement evaluates, including annotations and nested statements. -/
+partial def Stm.exprs : Stm → List TypedExpr
+  | .assign lhs val =>
+      (match lhs.node with
+        | .var _ => []
+        | _ => [lhs.toExpr]) ++ [val]
+  | .ifLit c t f => [c] ++ t.exprs ++ f.exprs
+  | .whileLit c body => [c] ++ body.exprs
+  | .ret v => v.toList
+  | .seq a b => a.exprs ++ b.exprs
+  | .declare _ _ init body => init.toList ++ body.exprs
+  | .expr e | .assert e | .error e => [e]
+  | .annotation a => [a.expr]
+  | .nop => []
+
 namespace Print
 
 def ppBinOp : BinOp → String :=

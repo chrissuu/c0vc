@@ -164,11 +164,8 @@ partial def convertStm : C0VC.Ast.Stm → Except String C0VC.ElabbedAst.Stm
       let thenBranch' ← convertMStm thenBranch
       let elseBranch' ← convertMStm elseBranch
       .ok (.ifLit test' thenBranch' elseBranch')
-  | .whileLit test body step => do
-      let test' ← convertMExpr test
-      let body' ← convertMStm body
-      let step' ← convertMStm step
-      .ok (.whileLit test' body' step')
+  | .whileLit test body => do
+      .ok (.whileLit (← convertMExpr test) (← convertMStm body))
   | .ret valOpt => do
       let valOpt' ← valOpt.mapM convertMExpr
       .ok (.ret valOpt')

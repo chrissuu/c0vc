@@ -178,7 +178,7 @@ private def runFrontend (cfg : CliConfig) (infile : String) : Stage (Option Fron
   dumpIf cfg.dumpTypeRaw fun _ => C0VC.TypedAst.Print.ppProgramRaw typed
   if cfg.typecheckOnly then
     return none
-  let dce := C0VC.Dce.run (if toBoole then typed else C0VC.LowerAnnotations.run typed)
+  let dce := C0VC.Dce.run typed
   dumpIf cfg.dumpDce fun _ => C0VC.TypedAst.Print.ppProgram dce
   dumpIf cfg.dumpDceRaw fun _ => C0VC.TypedAst.Print.ppProgramRaw dce
   if toBoole then

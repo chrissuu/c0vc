@@ -35,9 +35,6 @@ deriving Inhabited
 
 abbrev TEnv := Std.HashMap String TempInfo
 
-def ppTempInfo (tInfo : TempInfo) : String :=
-  s!"{tInfo.temp.name} : {IR.Print.ppTau tInfo.tau}"
-
 def translateBinOp : Tree.BinOp → IR.BinOp
   | .plus => .add
   | .sub => .sub
@@ -55,24 +52,6 @@ def translateBinOp : Tree.BinOp → IR.BinOp
   | .gte => .sge
   | .eq => .eq
   | .neq => .ne
-
-def isCmpOp : Tree.BinOp → Bool
-  | .plus
-  | .sub
-  | .mul
-  | .div
-  | .mod
-  | .bitAnd
-  | .xor
-  | .bitOr
-  | .shl
-  | .shr => false
-  | .lt
-  | .lte
-  | .gt
-  | .gte
-  | .eq
-  | .neq => true
 
 def tauOfBinOp : Tree.BinOp → IR.Tau
   | .plus
@@ -141,10 +120,6 @@ def calleeOfName (fenv : FEnv) (fname : String) : IR.Callee :=
       else
         .source fname
   | none => .source fname
-
-def isAtom : Tree.Expr → Bool
-  | .const _ _ | .temp _ => true
-  | _ => false
 
 def translateTau : Tree.Tau → IR.Tau
   | .int => .i32
@@ -271,7 +246,6 @@ partial def translateExpr (cfg : Config) (senv : SEnv) (expr : Tree.Expr) (tc : 
     | none => panic! s!"[Error] saw a var ({var.name}) used before being defined"
 
   | .binop op tau lhs rhs =>
-    -- let tau : IR.Tau := if isCmpOp op then .i1 else .i32
     let (stmsLhs, transLhs, _, tc', tenv') := translateExpr cfg senv lhs tc fenv tenv
     let (stmsRhs, transRhs, _, tc'', tenv'') := translateExpr cfg senv rhs tc' fenv tenv'
     let (temp, tc''') := Temp.bumpAndCreate tc''
@@ -407,11 +381,6 @@ def mkFenv (program : Tree.Program) : FEnv :=
 -- When consuming a temp:
 --    if it's a ptr, then we must create a new temp, load from ptr, and then use this new temp
 --    if it's not a ptr, then ensure that we're only reading reg/value, and consume it
-
-def isOfPtr (temp : Temp) (tenv : TEnv) : Bool :=
-  match tenv.get? temp.name with
-  | some tInfo => tInfo.isPtr
-  | _ => false
 
 def translateCmd
   (cfg : Config)
