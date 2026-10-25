@@ -204,10 +204,14 @@ partial def translateExpr
   | .hastag => ([], .const .int 0, env, tc, lc)
   | .stringLit _ => ([], .const .int 0, env, tc, lc)
   | .null => ([], .null, env, tc, lc)
-  | .alloc tau => ([], .alloc (translateTau tau), env, tc, lc)
+  -- Allocations run (and can fail) where they occur, before later operands.
+  | .alloc tau =>
+      let (temp, tc') := Temp.bumpAndCreate tc
+      ([.move temp (.alloc (translateTau tau))], .temp temp, env, tc', lc)
   | .allocArray tau size =>
       let (cmdsSize, transSize, env', tc', lc') := translateExpr senv size env tc lc
-      (cmdsSize, .allocArray (translateTau tau) transSize, env', tc', lc')
+      let (temp, tc'') := Temp.bumpAndCreate tc'
+      (cmdsSize ++ [.move temp (.allocArray (translateTau tau) transSize)], .temp temp, env', tc'', lc')
   | .deref ptr =>
       let (cmdsPtr, transPtr, env', tc', lc') := translateExpr senv ptr env tc lc
       let (temp, tc'') := Temp.bumpAndCreate tc'
@@ -344,10 +348,14 @@ partial def translateStm
           let (temp, tc') := Temp.bumpAndCreate tc
           (cmds ++ [.move temp expr], env', tc', lc')
     | _ =>
+        -- C0 evaluates the target address, with its checks, before the
+        -- right-hand side, which may change the memory the address reads.
         let (cmdsLhs, lhsExpr, env', tc', lc') := translateLValueExpr senv lhs env tc lc
+        let (addrTemp, tc') := Temp.bumpAndCreate tc'
         let (cmdsRhs, expr, env'', tc'', lc'') := translateExpr senv val env' tc' lc'
         let (rhsTemp, tc''') := Temp.bumpAndCreate tc''
-        (cmdsLhs ++ [.checkAddr lhsExpr] ++ cmdsRhs ++ [.move rhsTemp expr, .store lhsExpr (.temp rhsTemp)], env'', tc''', lc'')
+        (cmdsLhs ++ [.computeAddr addrTemp lhsExpr] ++ cmdsRhs ++
+          [.move rhsTemp expr, .store (.temp addrTemp) (.temp rhsTemp)], env'', tc''', lc'')
 
   | .ifLit test thenBranch elseBranch =>
     let emitLabel (cmds : List Command) :=

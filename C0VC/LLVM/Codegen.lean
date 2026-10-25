@@ -494,12 +494,18 @@ def translateCmd
     , lc
     , tenv'')
 
-  | .checkAddr dest =>
-    let (stmsDest, _, _, tc', tenv') := translateAddr cfg senv dest tc fenv tenv
-    ( stmsDest
-    , tc'
+  | .computeAddr dest lvalue =>
+    let (stms, addr, tau, tc', tenv') := translateAddr cfg senv lvalue tc fenv tenv
+    let (stms, addrTemp, tc'') :=
+      match addr with
+      | .ptr t | .var t => (stms, t, tc')
+      | other =>
+          let (t, tc'') := Temp.bumpAndCreate tc'
+          (stms ++ [ .gep (.ptr t) tau other [(.i32, .bitVec 0)] ], t, tc'')
+    ( stms
+    , tc''
     , lc
-    , tenv')
+    , tenv'.insert dest.name { temp := addrTemp, tau, isPtr := true })
 
   | .call fname args =>
     let (stms, transArgs, tc', tenv') :=
@@ -634,10 +640,16 @@ def translateFdefn (cfg : Config) (fdefn : Tree.FunctionDef) (fenv : FEnv) : IR.
       (stms, tc', 0, seededTEnv')
       fdefn.commands
 
+    -- An alloca outside the entry block allocates again on every execution
+    -- and is only freed on return, so a loop would grow the stack without
+    -- bound. Allocas depend on nothing, so hoist them all to the entry block.
+    let isAlloca : IR.Stm → Bool
+      | .alloca .. => true
+      | _ => false
     { fname := fdefn.fname
     , tau := translateTau fdefn.tau
     , args := translateArgs fdefn.args
-    , stms := transCmds
+    , stms := transCmds.filter isAlloca ++ transCmds.filter (!isAlloca ·)
     , structs := structs
     , external := false }
 
