@@ -164,6 +164,15 @@ deriving Inhabited
 
 abbrev Program := List GDecl
 
+theorem MarkedExpr.sizeOf_node_lt (e : MarkedExpr) : sizeOf e.node < sizeOf e := by
+  cases e; simp; omega
+theorem MarkedLValue.sizeOf_node_lt (e : MarkedLValue) : sizeOf e.node < sizeOf e := by
+  cases e; simp; omega
+theorem MarkedAnno.sizeOf_node_lt (e : MarkedAnno) : sizeOf e.node < sizeOf e := by
+  cases e; simp; omega
+theorem MarkedStm.sizeOf_node_lt (e : MarkedStm) : sizeOf e.node < sizeOf e := by
+  cases e; simp; omega
+
 namespace Print
 
 def ppAssignOp : AssignOp → String
