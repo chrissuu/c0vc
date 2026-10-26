@@ -64,12 +64,12 @@ def emitCalleeName : IR.Callee → String
   | .runtime fname => fname
 
 mutual
-partial def emitFEvals (args : List (IR.Tau × IR.Val)) : String :=
+def emitFEvals (args : List (IR.Tau × IR.Val)) : String :=
   ", ".intercalate (List.map
   (λ (tau, arg) => s!"{emitTau tau} {emitVal arg}") args)
 
 
-partial def emitVal : IR.Val → String
+def emitVal : IR.Val → String
   | .void => ""
   | .var t => s!"%{t.name}"
   | .ptr t => s!"%{t.name}"

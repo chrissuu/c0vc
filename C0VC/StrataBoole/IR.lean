@@ -152,7 +152,7 @@ deriving Inhabited, Repr
 namespace Stmt
 
 /-- Every expression a statement evaluates, including in nested statements. -/
-partial def exprs : Stmt → List Expr
+def exprs : Stmt → List Expr
   | .assign lhs rhs =>
       (match lhs with
         | .var _ => []
@@ -165,14 +165,14 @@ partial def exprs : Stmt → List Expr
   | _ => []
 
 /-- Procedures a statement calls, including in nested statements. -/
-partial def calls : Stmt → List String
+def calls : Stmt → List String
   | .call _ fname _ => [fname]
   | .ifElse _ t f => t.flatMap calls ++ f.flatMap calls
   | .whileLoop _ _ body | .block _ body => body.flatMap calls
   | _ => []
 
 /-- Apply `f` to every expression a statement evaluates, including in nested statements. -/
-partial def mapExprs (f : Expr → Expr) : Stmt → Stmt
+def mapExprs (f : Expr → Expr) : Stmt → Stmt
   | .assign lhs rhs =>
       let lhs := match lhs with
         | .var n => LValue.var n

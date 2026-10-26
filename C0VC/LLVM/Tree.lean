@@ -108,7 +108,7 @@ def ppArg (arg : Arg) : String :=
   let (tau, temp) := arg
   s!"{ppTau tau} {temp.name}"
 
-partial def ppExpr : Expr → String
+def ppExpr : Expr → String
   -- TODO: print the type of the const?
   | .const _ val => toString val
   | .temp t => t.name
@@ -159,7 +159,7 @@ def ppProgram (program : Program) : String :=
   String.intercalate "\n\n" (program.map ppFunctionDef)
 
 mutual
-partial def ppExprRaw (indentLevel : Nat) : Expr → String
+def ppExprRaw (indentLevel : Nat) : Expr → String
   | .const tau val =>
       s!"{spaces indentLevel}Const({val}):{ppTau tau}"
   | .temp t =>
@@ -188,7 +188,7 @@ partial def ppExprRaw (indentLevel : Nat) : Expr → String
   | .arrAccess arr index tau =>
       s!"{spaces indentLevel}ArrAccess({ppTau tau},\n{ppExprRaw (indentLevel + 1) arr},\n{ppExprRaw (indentLevel + 1) index}\n{spaces indentLevel})"
 
-partial def ppCommandRaw (indentLevel : Nat) : Command → String
+def ppCommandRaw (indentLevel : Nat) : Command → String
   | .declare dest tau =>
       s!"{spaces indentLevel}Declare({dest.name}, {ppTau tau})"
   | .move dest src =>

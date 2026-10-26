@@ -130,11 +130,11 @@ partial def convertLValue : C0VC.Ast.LValue → Except String C0VC.ElabbedAst.LV
 end
 
 mutual
-partial def convertMAnno (manno : C0VC.Ast.MarkedAnno) : Except String C0VC.ElabbedAst.MarkedAnno := do
+def convertMAnno (manno : C0VC.Ast.MarkedAnno) : Except String C0VC.ElabbedAst.MarkedAnno := do
   let node ← convertAnno manno.node
   .ok { node, span := manno.span }
 
-partial def convertAnno : C0VC.Ast.Anno → Except String C0VC.ElabbedAst.Anno
+def convertAnno : C0VC.Ast.Anno → Except String C0VC.ElabbedAst.Anno
   | .requires precondition => do
       let precondition' ← convertMExpr precondition
       .ok (.requires precondition')

@@ -408,7 +408,7 @@ partial def classifyTypedefsWith (initialTypedefs : List String) (tokens : List 
             go typedefs (classifyTypedefToken typedefs tok :: acc) toks
   go (Std.HashSet.ofList initialTypedefs) [] tokens
 
-partial def classifyTypedefs (tokens : List Token) : List Token :=
+def classifyTypedefs (tokens : List Token) : List Token :=
   classifyTypedefsWith [] tokens
 
 /-- Where the lexer is relative to annotations; `@` is whitespace inside one. -/

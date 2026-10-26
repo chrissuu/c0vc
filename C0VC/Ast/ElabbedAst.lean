@@ -202,7 +202,7 @@ private def spaces (n : Nat) : String :=
   String.ofList (List.replicate (n * 2) ' ')
 
 mutual
-partial def ppExpr : Expr → String
+def ppExpr : Expr → String
   | .var id => id
   | .intLit n => toString n
   | .trueLit => "true"
@@ -215,7 +215,7 @@ partial def ppExpr : Expr → String
   | .ternary test thenBranch elseBranch =>
       s!"({ppMarkedExpr test} ? {ppMarkedExpr thenBranch} : {ppMarkedExpr elseBranch})"
   | .call fname args =>
-      let argsStr := String.intercalate ", " (args.map ppMarkedExpr)
+      let argsStr := String.intercalate ", " (ppMarkedExprList args)
       s!"{fname}({argsStr})"
   | .length arrayLike => s!"\\length ({ppMarkedExpr arrayLike})"
   | .result => "\\result"
@@ -227,20 +227,26 @@ partial def ppExpr : Expr → String
   | .deref ptr => s!"*({ppMarkedExpr ptr})"
   | .arrAccess arr index => s!"{ppMarkedExpr arr}[{ppMarkedExpr index}]"
 
-partial def ppMarkedExpr (e : MarkedExpr) : String :=
-  ppExpr e.node
+def ppMarkedExpr : MarkedExpr → String
+  | e@{ node, .. } =>
+    ppExpr node
+
+def ppMarkedExprList : List MarkedExpr → List String
+  | [] => []
+  | x :: xs => ppMarkedExpr x :: ppMarkedExprList xs
 end
 
 mutual
-partial def ppLValue : LValue → String
+def ppLValue : LValue → String
   | .var id => id
   | .deref ptr => s!"*({ppMarkedLValue ptr})"
   | .dot struct field => s!"{ppMarkedLValue struct}.{field}"
   | .arrow structPtr field => s!"{ppMarkedLValue structPtr}->{field}"
   | .arrAccess arr index => s!"{ppMarkedLValue arr}[{ppMarkedExpr index}]"
 
-partial def ppMarkedLValue (lv : MarkedLValue) : String :=
-  ppLValue lv.node
+def ppMarkedLValue : MarkedLValue → String
+  | lv@{ node, .. } =>
+    ppLValue node
 end
 
 mutual
@@ -255,7 +261,7 @@ def ppMarkedAnno (a : MarkedAnno) : String :=
 end
 
 mutual
-partial def ppStm : Stm → String
+def ppStm : Stm → String
   | .assign lhs e =>
       s!"{ppMarkedLValue lhs} = {ppMarkedExpr e};"
   | .asop lhs op e =>
@@ -273,7 +279,7 @@ partial def ppStm : Stm → String
   | .error e =>
       s!"error({ppMarkedExpr e});"
   | .declare id tau init body =>
-      let bodyStr := ppStm body.node
+      let bodyStr := ppMarkedStm body
       let declStr :=
         match init with
         | some e => s!"{ppTau tau} {id} = {ppMarkedExpr e};"
@@ -292,8 +298,9 @@ partial def ppStm : Stm → String
       s!"while ({ppMarkedExpr cond}) \{\n{indent (ppMarkedStm body)}\n}"
   | .annotation a => s!"{ppMarkedAnno a}"
 
-partial def ppMarkedStm (s : MarkedStm) : String :=
-  ppStm s.node
+def ppMarkedStm : MarkedStm → String
+  | s@{ node, .. } =>
+    ppStm node
 end
 
 def ppStms (stms : List MarkedStm) : String :=
@@ -337,7 +344,7 @@ def ppProgram (program : Program) : String :=
   String.intercalate "\n\n" (program.map ppGDecl)
 
 mutual
-partial def ppExprRaw (indentLevel : Nat) : Expr → String
+def ppExprRaw (indentLevel : Nat) : Expr → String
   | .var id => s!"{spaces indentLevel}Var({id})"
   | .intLit n => s!"{spaces indentLevel}IntLit({n})"
   | .trueLit => s!"{spaces indentLevel}TrueLit"
@@ -369,8 +376,9 @@ partial def ppExprRaw (indentLevel : Nat) : Expr → String
   | .arrAccess arr index =>
       s!"{spaces indentLevel}ArrAccess(\n{ppMarkedExprRaw (indentLevel + 1) arr},\n{ppMarkedExprRaw (indentLevel + 1) index}\n{spaces indentLevel})"
 
-partial def ppMarkedExprRaw (indentLevel : Nat) (e : MarkedExpr) : String :=
-  ppExprRaw indentLevel e.node
+def ppMarkedExprRaw (indentLevel : Nat) : MarkedExpr → String
+  | e@{ node, .. } =>
+    ppExprRaw indentLevel node
 end
 
 def ppAnnoRaw (indentLevel : Nat) : Anno → String
@@ -384,7 +392,7 @@ def ppAnnoRaw (indentLevel : Nat) : Anno → String
       s!"{spaces indentLevel}LoopInvariant(\n{ppMarkedExprRaw (indentLevel + 1) e}\n{spaces indentLevel})"
 
 mutual
-partial def ppStmRaw (indentLevel : Nat) : Stm → String
+def ppStmRaw (indentLevel : Nat) : Stm → String
   | .assign lhs e =>
       s!"{spaces indentLevel}Assign({ppMarkedLValue lhs},\n{ppMarkedExprRaw (indentLevel + 1) e}\n{spaces indentLevel})"
   | .asop lhs op e =>
@@ -413,8 +421,9 @@ partial def ppStmRaw (indentLevel : Nat) : Stm → String
   | .annotation a =>
       s!"{spaces indentLevel}Annotation(\n{ppAnnoRaw (indentLevel + 1) a.node}\n{spaces indentLevel})"
 
-partial def ppMarkedStmRaw (indentLevel : Nat) (stm : MarkedStm) : String :=
-  ppStmRaw indentLevel stm.node
+def ppMarkedStmRaw (indentLevel : Nat) : MarkedStm → String
+  | stm@{ node, .. } =>
+    ppStmRaw indentLevel node
 end
 
 def ppFunctionDefRaw (fdefn : FunctionDef) : String :=
