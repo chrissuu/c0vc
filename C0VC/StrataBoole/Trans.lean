@@ -146,9 +146,17 @@ private def fail (msg : String) (span? : Option SrcSpan := none) : M α :=
 private def sanitize (name : String) : String :=
   String.map (fun c => if c.isAlphanum || c == '_' then c else '_') name
 
-private partial def pickName (taken : String → Bool) (base : String) (k : Nat := 0) : String :=
-  let candidate := if k == 0 then base else s!"{base}_{k}"
-  if taken candidate then pickName taken base (k + 1) else candidate
+/--
+The first of `base`, `base_1`, `base_2`, ... that is not taken. The search is
+bounded so that the function is total; no name table here comes close to the
+bound.
+-/
+private def pickName (taken : String → Bool) (base : String) : String :=
+  let candidate (k : Nat) := if k == 0 then base else s!"{base}_{k}"
+  let rec search : (fuel k : Nat) → String
+    | 0, k => candidate k
+    | fuel + 1, k => if taken (candidate k) then search fuel (k + 1) else candidate k
+  search 1000000 0
 
 private def freshName (base : String) : M String := do
   let st ← get
@@ -197,7 +205,7 @@ private def mkLabel (kind message : String) (span? : Option SrcSpan) : M String 
   let label :=
     match span? with
     | some span => pickName (st.usedLabels.contains ·) s!"{kind}_L{span.startLoc.line}C{span.startLoc.col}"
-    | none => pickName (st.usedLabels.contains ·) kind 1
+    | none => pickName (fun n => n == kind || st.usedLabels.contains n) kind
   set { st with
     usedLabels := st.usedLabels.insert label
     labels := st.labels.push { label, message, procedure := st.procName, span := span? } }
@@ -365,7 +373,7 @@ private def snapshot (tau : Tau) (pres : List Pre) (e : Expr) : M (List Pre × E
     pure (pres ++ [.stmt (.declare tmp tau), .stmt (.assign (.var tmp) e)], .var tmp)
 
 /-- Combine operands evaluated left to right, protecting earlier values from later calls. -/
-private partial def sequenceOperands : List (Tau × List Pre × Expr) → M (List Pre × List Expr)
+private def sequenceOperands : List (Tau × List Pre × Expr) → M (List Pre × List Expr)
   | [] => pure ([], [])
   | (tau, pres, e) :: rest => do
       let (pres, e) ←
@@ -610,13 +618,13 @@ end
 
 /-! ## Statements -/
 
-private partial def declaredIn : Stmt → List String
+private def declaredIn : Stmt → List String
   | .declare name _ => [name]
   | .ifElse _ t f => t.flatMap declaredIn ++ f.flatMap declaredIn
   | .whileLoop _ _ body | .block _ body => body.flatMap declaredIn
   | _ => []
 
-private partial def assignedIn : Stmt → List String
+private def assignedIn : Stmt → List String
   | .assign (.var name) _ => [name]
   | .assign (.mapSlot map _) _ =>
       let rec root : Expr → List String
@@ -825,22 +833,21 @@ private def lowerBody (usesHeap : Bool) (f : C0VC.TypedAst.FunctionDef) (sig : F
 /-! ## Effects -/
 
 /-- Heap globals written and procedures called by some statements. -/
-private partial def effectsOf (heapNames : List String) (stms : List Stmt) : List String × List String :=
-  stms.foldl
-    (fun (mods, calls) stm =>
-      match stm with
-      | .assign lhs _ =>
-          (mods ++ (assignedIn (.assign lhs (.boolLit true))).filter heapNames.contains, calls)
-      | .call _ fname _ => (mods, calls ++ [fname])
-      | .ifElse _ t f =>
-          let (m1, c1) := effectsOf heapNames t
-          let (m2, c2) := effectsOf heapNames f
-          (mods ++ m1 ++ m2, calls ++ c1 ++ c2)
-      | .whileLoop _ _ body | .block _ body =>
-          let (m, c) := effectsOf heapNames body
-          (mods ++ m, calls ++ c)
-      | _ => (mods, calls))
-    ([], [])
+private def effectsOf (heapNames : List String) : List Stmt → List String × List String
+  | [] => ([], [])
+  | stm :: rest =>
+      let (mods, calls) : List String × List String :=
+        match stm with
+        | .assign lhs _ => ((assignedIn (.assign lhs (.boolLit true))).filter heapNames.contains, [])
+        | .call _ fname _ => ([], [fname])
+        | .ifElse _ t f =>
+            let (m1, c1) := effectsOf heapNames t
+            let (m2, c2) := effectsOf heapNames f
+            (m1 ++ m2, c1 ++ c2)
+        | .whileLoop _ _ body | .block _ body => effectsOf heapNames body
+        | _ => ([], [])
+      let (restMods, restCalls) := effectsOf heapNames rest
+      (mods ++ restMods, calls ++ restCalls)
 
 /--
 Close per-procedure sets over the call graph: each procedure's set gains its
@@ -869,20 +876,18 @@ private def computeModifies (heapNames : List String) (procs : List (String × O
 
 /-! ## Programs -/
 
-private partial def tauUsesHeap : CTau → Bool
+private def tauUsesHeap : CTau → Bool
   | .ptr _ | .array _ | .struct _ | .null => true
   | _ => false
 
-private partial def exprUsesHeap (e : CExpr) : Bool :=
-  tauUsesHeap e.tau ||
-  match e.node with
-  | .binop _ l r => exprUsesHeap l || exprUsesHeap r
-  | .ternary c t f => exprUsesHeap c || exprUsesHeap t || exprUsesHeap f
-  | .call _ args => args.any exprUsesHeap
-  | .length _ | .alloc _ | .allocArray .. | .deref _ | .arrAccess .. | .dot .. | .arrow .. => true
-  | _ => false
+private def exprUsesHeap (e : CExpr) : Bool :=
+  e.any fun sub =>
+    tauUsesHeap sub.tau ||
+    match sub.node with
+    | .length _ | .alloc _ | .allocArray .. | .deref _ | .arrAccess .. | .dot .. | .arrow .. => true
+    | _ => false
 
-private partial def stmUsesHeap : CStm → Bool
+private def stmUsesHeap : CStm → Bool
   | .assign lhs val => tauUsesHeap lhs.tau || exprUsesHeap val ||
       (match lhs.node with | .var _ => false | _ => true)
   | .ifLit c t f => exprUsesHeap c || stmUsesHeap t || stmUsesHeap f
@@ -956,7 +961,7 @@ The function body is
 - uninterpreted otherwise, including for recursive functions.
 -/
 
-private partial def stmWritesMemory : CStm → Bool
+private def stmWritesMemory : CStm → Bool
   | .assign lhs _ =>
       match lhs.node with
       | .var _ => false
@@ -987,7 +992,7 @@ def pureFunctions (program : C0VC.TypedAst.Program) : Std.HashSet String := Id.r
       pureFns
   return pureFns
 
-private partial def stmAnnoExprs : CStm → List CExpr
+private def stmAnnoExprs : CStm → List CExpr
   | .annotation a => [a.expr]
   | .ifLit _ t f => stmAnnoExprs t ++ stmAnnoExprs f
   | .whileLit _ body => stmAnnoExprs body
@@ -1032,7 +1037,7 @@ private def orderByContractCalls (program : C0VC.TypedAst.Program) : List C0VC.T
       order := order.push f
   return order.toList
 
-private partial def flatItems : CStm → List CStm
+private def flatItems : CStm → List CStm
   | .seq a b => flatItems a ++ flatItems b
   | .declare x tau init body => [.declare x tau init .nop] ++ flatItems body
   | .nop | .annotation _ => []
@@ -1086,7 +1091,7 @@ private def searchLoop? (body : CStm) : Option (String × CExpr × CExpr × Bool
 private def notExpressionForm : M α := throw "not in expression form"
 
 /-- The value of a function body in expression form, given the value of what follows. -/
-private partial def stmtThen (stm : CStm) (rest : Option Expr) : M (Option Expr) := do
+private def stmtThen (stm : CStm) (rest : Option Expr) : M (Option Expr) := do
   match stm with
   | .nop | .annotation _ | .assert _ | .error _ | .expr _ => pure rest
   | .ret (some e) => some <$> (Prod.snd <$> lowerExpr e)
@@ -1204,7 +1209,7 @@ private def heapArgsAt (fnReads : Std.HashMap String (List String)) (formal : Bo
 private def addHeapArgs (fnReads : Std.HashMap String (List String)) (formal : Bool) : Expr → Expr :=
   Expr.mapBottomUp (heapArgsAt fnReads formal)
 
-private partial def stmDeclTaus : CStm → List CTau
+private def stmDeclTaus : CStm → List CTau
   | .declare _ tau _ body => tau :: stmDeclTaus body
   | .ifLit _ t f => stmDeclTaus t ++ stmDeclTaus f
   | .whileLit _ body => stmDeclTaus body

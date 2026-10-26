@@ -186,7 +186,7 @@ def tcIntLitRange (n : Int) : Except String Unit :=
 
 def ppTau : Tau → String := Print.ppTau
 
-partial def tauContainsVoidOrString : Tau → Bool
+def tauContainsVoidOrString : Tau → Bool
   | .void | .string => true
   | .ptr tau | .array tau => tauContainsVoidOrString tau
   | _ => false
@@ -501,7 +501,7 @@ def tcExprHasType (senv : SEnv) (fenv : FEnv) (ctx : ExprCtx) (mexpr : MarkedExp
   else
     .error s!"{what} must have type {ppTau expected}"
 
-partial def tcAnno (senv : SEnv) (fenv : FEnv) (ret : Tau) (anno : MarkedAnno) (venv : VEnv) :
+def tcAnno (senv : SEnv) (fenv : FEnv) (ret : Tau) (anno : MarkedAnno) (venv : VEnv) :
     Except String C0VC.TypedAst.Anno := do
   match anno.node with
   | .requires e => .ok (.requires (← tcExpr senv fenv .contract e venv))
@@ -681,7 +681,7 @@ partial def tcMStmCore (senv : SEnv) (fenv : FEnv) (expectedRet : Tau) (mstm : M
 
 end
 
-partial def typedStmtGuaranteedReturn (mstm : C0VC.TypedAst.Stm) : Bool :=
+def typedStmtGuaranteedReturn (mstm : C0VC.TypedAst.Stm) : Bool :=
   match mstm with
   | .ret _ => true
   | .seq first rest => typedStmtGuaranteedReturn first || typedStmtGuaranteedReturn rest
@@ -693,7 +693,7 @@ partial def typedStmtGuaranteedReturn (mstm : C0VC.TypedAst.Stm) : Bool :=
 def typedBodyGuaranteedReturn (body : List C0VC.TypedAst.Stm) : Bool :=
   body.any typedStmtGuaranteedReturn
 
-partial def collectReturnedValueOptsFromStmt (tstm : C0VC.TypedAst.Stm) :
+def collectReturnedValueOptsFromStmt (tstm : C0VC.TypedAst.Stm) :
     List (Option C0VC.TypedAst.TypedExpr) :=
   match tstm with
   | .ret valOpt => [valOpt]

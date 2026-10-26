@@ -73,57 +73,98 @@ deriving Inhabited, BEq, Repr
 
 namespace Expr
 
-/-- The immediate subexpressions of an expression. -/
-def children : Expr → List Expr
-  | .arith _ a b | .cmp _ a b | .mathArith _ a b | .mathCmp _ a b
-  | .eq a b | .neq a b | .and a b | .or a b | .implies a b | .mapGet a b => [a, b]
-  | .not e | .old e | .forall _ e | .exists _ e => [e]
-  | .ite c t f => [c, t, f]
-  | .fnCall _ args => args
-  | _ => []
-
-/-- Rebuild an expression with `f` applied to each immediate subexpression. -/
-def mapChildren (f : Expr → Expr) : Expr → Expr
-  | .arith op a b => .arith op (f a) (f b)
-  | .cmp op a b => .cmp op (f a) (f b)
-  | .mathArith op a b => .mathArith op (f a) (f b)
-  | .mathCmp op a b => .mathCmp op (f a) (f b)
-  | .eq a b => .eq (f a) (f b)
-  | .neq a b => .neq (f a) (f b)
-  | .and a b => .and (f a) (f b)
-  | .or a b => .or (f a) (f b)
-  | .implies a b => .implies (f a) (f b)
-  | .mapGet a b => .mapGet (f a) (f b)
-  | .not e => .not (f e)
-  | .old e => .old (f e)
-  | .forall bs e => .forall bs (f e)
-  | .exists bs e => .exists bs (f e)
-  | .ite c t e => .ite (f c) (f t) (f e)
-  | .fnCall name args => .fnCall name (args.map f)
-  | e => e
-
+mutual
 /-- Apply `g` to every node, children first. -/
-partial def mapBottomUp (g : Expr → Expr) (e : Expr) : Expr :=
-  g (e.mapChildren (mapBottomUp g))
+def mapBottomUp (g : Expr → Expr) : Expr → Expr
+  | .arith op a b => g (.arith op (mapBottomUp g a) (mapBottomUp g b))
+  | .cmp op a b => g (.cmp op (mapBottomUp g a) (mapBottomUp g b))
+  | .mathArith op a b => g (.mathArith op (mapBottomUp g a) (mapBottomUp g b))
+  | .mathCmp op a b => g (.mathCmp op (mapBottomUp g a) (mapBottomUp g b))
+  | .eq a b => g (.eq (mapBottomUp g a) (mapBottomUp g b))
+  | .neq a b => g (.neq (mapBottomUp g a) (mapBottomUp g b))
+  | .and a b => g (.and (mapBottomUp g a) (mapBottomUp g b))
+  | .or a b => g (.or (mapBottomUp g a) (mapBottomUp g b))
+  | .implies a b => g (.implies (mapBottomUp g a) (mapBottomUp g b))
+  | .mapGet a b => g (.mapGet (mapBottomUp g a) (mapBottomUp g b))
+  | .not e => g (.not (mapBottomUp g e))
+  | .old e => g (.old (mapBottomUp g e))
+  | .forall bs e => g (.forall bs (mapBottomUp g e))
+  | .exists bs e => g (.exists bs (mapBottomUp g e))
+  | .ite c t e => g (.ite (mapBottomUp g c) (mapBottomUp g t) (mapBottomUp g e))
+  | .fnCall name args => g (.fnCall name (mapBottomUpList g args))
+  | e => g e
 
+def mapBottomUpList (g : Expr → Expr) : List Expr → List Expr
+  | [] => []
+  | e :: es => mapBottomUp g e :: mapBottomUpList g es
+end
+
+mutual
+/-- The expression and all of its subexpressions, outermost first. -/
+def subexprs : Expr → List Expr
+  | e@(.fnCall _ args) => e :: subexprsList args
+  | e@(.arith _ a b) | e@(.cmp _ a b) | e@(.mathArith _ a b) | e@(.mathCmp _ a b)
+  | e@(.eq a b) | e@(.neq a b) | e@(.and a b) | e@(.or a b) | e@(.implies a b)
+  | e@(.mapGet a b) => e :: (subexprs a ++ subexprs b)
+  | e@(.not x) | e@(.old x) | e@(.forall _ x) | e@(.exists _ x) => e :: subexprs x
+  | e@(.ite c t f) => e :: (subexprs c ++ subexprs t ++ subexprs f)
+  | e => [e]
+
+def subexprsList : List Expr → List Expr
+  | [] => []
+  | e :: es => subexprs e ++ subexprsList es
+end
+
+mutual
 /-- Variables that occur free in an expression. -/
-partial def freeVars : Expr → List String
+def freeVars : Expr → List String
   | .var name => [name]
   | .forall bs e | .exists bs e => (freeVars e).filter fun n => !bs.any (·.1 == n)
-  | e => e.children.flatMap freeVars
+  | .fnCall _ args => freeVarsList args
+  | .arith _ a b | .cmp _ a b | .mathArith _ a b | .mathCmp _ a b
+  | .eq a b | .neq a b | .and a b | .or a b | .implies a b | .mapGet a b =>
+      freeVars a ++ freeVars b
+  | .not e | .old e => freeVars e
+  | .ite c t f => freeVars c ++ freeVars t ++ freeVars f
+  | _ => []
+
+def freeVarsList : List Expr → List String
+  | [] => []
+  | e :: es => freeVars e ++ freeVarsList es
+end
 
 /-- Names of the Boole functions an expression applies. -/
-partial def fnCalls (e : Expr) : List String :=
-  (match e with
-    | .fnCall name _ => [name]
-    | _ => []) ++ e.children.flatMap fnCalls
+def fnCalls (e : Expr) : List String :=
+  e.subexprs.filterMap fun
+    | .fnCall name _ => some name
+    | _ => none
 
+mutual
 /-- Capture-avoiding substitution of variables; quantifiers shadow `σ`. -/
-partial def subst (σ : List (String × Expr)) : Expr → Expr
+def subst (σ : List (String × Expr)) : Expr → Expr
   | .var name => (σ.lookup name).getD (.var name)
   | .forall bs e => .forall bs (subst (σ.filter fun (n, _) => !bs.any (·.1 == n)) e)
   | .exists bs e => .exists bs (subst (σ.filter fun (n, _) => !bs.any (·.1 == n)) e)
-  | e => e.mapChildren (subst σ)
+  | .arith op a b => .arith op (subst σ a) (subst σ b)
+  | .cmp op a b => .cmp op (subst σ a) (subst σ b)
+  | .mathArith op a b => .mathArith op (subst σ a) (subst σ b)
+  | .mathCmp op a b => .mathCmp op (subst σ a) (subst σ b)
+  | .eq a b => .eq (subst σ a) (subst σ b)
+  | .neq a b => .neq (subst σ a) (subst σ b)
+  | .and a b => .and (subst σ a) (subst σ b)
+  | .or a b => .or (subst σ a) (subst σ b)
+  | .implies a b => .implies (subst σ a) (subst σ b)
+  | .mapGet a b => .mapGet (subst σ a) (subst σ b)
+  | .not e => .not (subst σ e)
+  | .old e => .old (subst σ e)
+  | .ite c t e => .ite (subst σ c) (subst σ t) (subst σ e)
+  | .fnCall name args => .fnCall name (substList σ args)
+  | e => e
+
+def substList (σ : List (String × Expr)) : List Expr → List Expr
+  | [] => []
+  | e :: es => subst σ e :: substList σ es
+end
 
 end Expr
 
