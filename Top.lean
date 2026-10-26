@@ -281,7 +281,7 @@ def main (args : List String) : IO UInt32 := do
             | IO.eprintln "cannot find the c0vc runtime rt/c0vc.c; set C0VC_RUNTIME to its path"
               return 1
           pure (if cfg.libs.isEmpty then #[runtime] else #["-DC0VC_WITH_15411_LIB", runtime])
-      let out ← IO.Process.output { cmd := "clang-15", args := #[ll] ++ runtimeArgs ++ #["-o", exe] }
+      let out ← IO.Process.output { cmd := "clang-15", args := #["-O1", ll] ++ runtimeArgs ++ #["-o", exe] }
       IO.FS.removeFile ll
       if out.exitCode != 0 then
         IO.eprintln out.stderr
