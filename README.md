@@ -46,11 +46,17 @@ Build the compiler with Lake:
 lake build c0vc
 ```
 
-Emit LLVM IR:
+Emit LLVM IR, or a linked executable (needs `clang-15`):
 
 ```sh
 lake exe c0vc --emit=llvm path/to/program.c0
+lake exe c0vc --emit=exe path/to/program.c0
 ```
+
+Add `-d` (`--dyn-check`) to check contracts at run time, like `cc0 -d`:
+`@requires` on entry, `@ensures` before each return, `@assert` in place, and
+loop invariants before every evaluation of the loop condition. A failed
+contract aborts the program.
 
 Emit StrataBoole:
 
