@@ -92,6 +92,9 @@ instance : Inhabited Stm := ⟨.nop⟩
 theorem TypedExpr.sizeOf_node_lt (e : TypedExpr) : sizeOf e.node < sizeOf e := by
   cases e; simp; omega
 
+theorem TypedLValue.sizeOf_node_lt (e : TypedLValue) : sizeOf e.node < sizeOf e := by
+  cases e; simp; omega
+
 /-! ## Traversals shared by the typechecker and the backends -/
 
 mutual

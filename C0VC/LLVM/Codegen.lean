@@ -81,36 +81,51 @@ def alignTo (offset align : Int) : Int :=
     let rem := offset % align
     if rem == 0 then offset else offset + (align - rem)
 
+/-
+Struct sizes and alignments recurse through the structs a struct contains by
+value. Structs are acyclic (checked by the typechecker), so nesting is at most
+`senv.size` deep; `fuel` makes that bound visible to Lean.
+-/
 mutual
-partial def treeTauAlign (senv : SEnv) : Tree.Tau → Int
-  | .int => 4
-  | .bool => 1
-  | .void => 1
-  | .ptr _ | .array _ | .null => 8
-  | .struct name =>
+def treeTauAlign (senv : SEnv) (tau : Tree.Tau) (fuel : Nat := senv.size + 1) : Int :=
+  match fuel, tau with
+  | _, .int => 4
+  | _, .bool => 1
+  | _, .void => 1
+  | _, .ptr _ | _, .array _ | _, .null => 8
+  | fuel + 1, .struct name =>
       match senv.get? name with
       | some fields =>
-          fields.foldl (fun acc tau => max acc (treeTauAlign senv tau)) 1
+          fields.foldl (fun acc tau => max acc (treeTauAlign senv tau fuel)) 1
       | none => 8
+  | 0, .struct _ => 8
 
-partial def treeTauSize (senv : SEnv) : Tree.Tau → Int
-  | .int => 4
-  | .bool => 1
-  | .void => 0
-  | .ptr _ | .array _ | .null => 8
-  | .struct name =>
+def treeTauSize (senv : SEnv) (tau : Tree.Tau) (fuel : Nat := senv.size + 1) : Int :=
+  match fuel, tau with
+  | _, .int => 4
+  | _, .bool => 1
+  | _, .void => 0
+  | _, .ptr _ | _, .array _ | _, .null => 8
+  | fuel + 1, .struct name =>
       match senv.get? name with
       | some fields =>
           let (size, structAlign) :=
             fields.foldl
               (fun (offset, maxAlign) tau =>
-                let fieldAlign := treeTauAlign senv tau
+                let fieldAlign := treeTauAlign senv tau fuel
                 let offset' := alignTo offset fieldAlign
-                (offset' + treeTauSize senv tau, max maxAlign fieldAlign))
+                (offset' + treeTauSize senv tau fuel, max maxAlign fieldAlign))
               (0, 1)
           alignTo size structAlign
       | none => 8
+  | 0, .struct _ => 8
 end
+
+/-- `translateExpr` hands memory expressions to `translateAddr`, which hands
+everything else back; this rank orders those hand-offs for termination. -/
+def addrRank : Tree.Expr → Nat
+  | .temp _ | .deref .. | .dot .. | .arrow .. | .arrAccess .. => 0
+  | _ => 2
 
 def calleeOfName (fenv : FEnv) (fname : String) : IR.Callee :=
   match fenv.get? fname with
@@ -148,8 +163,29 @@ def checkedArrayAccessIfNeeded (cfg : Config) (arr index : IR.Val) (tc : TempCou
   else
     ([], arr, tc)
 
+/-- Load a value of type `tau` from a translated address. -/
+def load (tau : Tree.Tau) : List IR.Stm × IR.Val × IR.Tau × TempCounter × TEnv → List IR.Stm × IR.Val × IR.Tau × TempCounter × TEnv
+  | (stmsAddr, addr, _, tc', tenv') =>
+    let (temp, tc'') := Temp.bumpAndCreate tc'
+    let tau' := translateTau tau
+    ( stmsAddr ++ [ .load (.var temp) tau' addr ]
+    , .var temp
+    , tau'
+    , tc''
+    , tenv')
+
+/-- Store a translated value in a fresh stack slot and return the slot's address. -/
+def spill : List IR.Stm × IR.Val × IR.Tau × TempCounter × TEnv → List IR.Stm × IR.Val × IR.Tau × TempCounter × TEnv
+  | (stms, transVal, tau, tc', tenv') =>
+    let (ptr, tc'') := Temp.bumpAndCreate tc'
+    ( stms ++ [ .alloca (.ptr ptr) tau, .store tau transVal (.ptr ptr) ]
+    , .ptr ptr
+    , tau
+    , tc''
+    , tenv')
+
 mutual
-partial def translateAddr (cfg : Config) (senv : SEnv) (expr : Tree.Expr) (tc : TempCounter) (fenv : FEnv) (tenv : TEnv): List IR.Stm × IR.Val × IR.Tau × TempCounter × TEnv :=
+def translateAddr (cfg : Config) (senv : SEnv) (expr : Tree.Expr) (tc : TempCounter) (fenv : FEnv) (tenv : TEnv): List IR.Stm × IR.Val × IR.Tau × TempCounter × TEnv :=
   match expr with
   | .temp var =>
     match tenv.get? var.name with
@@ -203,16 +239,23 @@ partial def translateAddr (cfg : Config) (senv : SEnv) (expr : Tree.Expr) (tc : 
     , tc''''
     , tenv'')
 
-  | _ =>
-    let (stms, transVal, tau, tc', tenv') := translateExpr cfg senv expr tc fenv tenv
-    let (ptr, tc'') := Temp.bumpAndCreate tc'
-    ( stms ++ [ .alloca (.ptr ptr) tau, .store tau transVal (.ptr ptr) ]
-    , .ptr ptr
-    , tau
-    , tc''
-    , tenv')
+  -- Any other value is stored in a fresh stack slot, whose address is used.
+  | .const tau val => spill (translateExpr cfg senv (.const tau val) tc fenv tenv)
+  | .binop op tau l r => spill (translateExpr cfg senv (.binop op tau l r) tc fenv tenv)
+  | .call fname args => spill (translateExpr cfg senv (.call fname args) tc fenv tenv)
+  | .runtimeCall fn args => spill (translateExpr cfg senv (.runtimeCall fn args) tc fenv tenv)
+  | .null => spill (translateExpr cfg senv .null tc fenv tenv)
+  | .alloc tau => spill (translateExpr cfg senv (.alloc tau) tc fenv tenv)
+  | .allocArray tau size => spill (translateExpr cfg senv (.allocArray tau size) tc fenv tenv)
+termination_by (sizeOf expr, addrRank expr)
+decreasing_by
+  all_goals simp_wf
+  all_goals first
+    | (apply Prod.Lex.right; decide)
+    | (apply Prod.Lex.right; simp [addrRank])
+    | (apply Prod.Lex.left; omega)
 
-partial def translateExpr (cfg : Config) (senv : SEnv) (expr : Tree.Expr) (tc : TempCounter) (fenv : FEnv) (tenv : TEnv): List IR.Stm × IR.Val × IR.Tau × TempCounter × TEnv :=
+def translateExpr (cfg : Config) (senv : SEnv) (expr : Tree.Expr) (tc : TempCounter) (fenv : FEnv) (tenv : TEnv): List IR.Stm × IR.Val × IR.Tau × TempCounter × TEnv :=
   match expr with
   | .const tau val =>
     ( []
@@ -259,12 +302,12 @@ partial def translateExpr (cfg : Config) (senv : SEnv) (expr : Tree.Expr) (tc : 
   | .call fname args =>
     let (stms, transArgs, tc', tenv') :=
       List.foldr
-      (λ expr (stmsAcc, argsAcc, tcAcc, tenvAcc) =>
+      (λ ⟨expr, _⟩ (stmsAcc, argsAcc, tcAcc, tenvAcc) =>
         let (stms', expr', _, tc', tenv') := translateExpr cfg senv expr tcAcc fenv tenvAcc
         (stms' ++ stmsAcc, expr' :: argsAcc, tc', tenv')
       )
       ([], [], tc, tenv)
-      args
+      args.attach
     let fInfo := fenv.get! fname
     let (retTau, argsTau) := (fInfo.retTau, fInfo.argsTau)
     let callee := calleeOfName fenv fname
@@ -288,12 +331,12 @@ partial def translateExpr (cfg : Config) (senv : SEnv) (expr : Tree.Expr) (tc : 
   | .runtimeCall fn args =>
     let (stms, transArgs, tc', tenv') :=
       List.foldr
-      (λ expr (stmsAcc, argsAcc, tcAcc, tenvAcc) =>
+      (λ ⟨expr, _⟩ (stmsAcc, argsAcc, tcAcc, tenvAcc) =>
         let (stms', expr', _, tc', tenv') := translateExpr cfg senv expr tcAcc fenv tenvAcc
         (stms' ++ stmsAcc, expr' :: argsAcc, tc', tenv')
       )
       ([], [], tc, tenv)
-      args
+      args.attach
     let callee := IR.Callee.runtime (Runtime.name fn)
     let fInfo := runtimeFunctionInfo fn
     let (retTau, argsTau) := (fInfo.retTau, fInfo.argsTau)
@@ -336,18 +379,20 @@ partial def translateExpr (cfg : Config) (senv : SEnv) (expr : Tree.Expr) (tc : 
     , tc''
     , tenv')
 
-  | .deref _ tau
-  | .dot _ _ _ tau
-  | .arrow _ _ _ tau
-  | .arrAccess _ _ tau =>
-    let (stmsAddr, addr, _, tc', tenv') := translateAddr cfg senv expr tc fenv tenv
-    let (temp, tc'') := Temp.bumpAndCreate tc'
-    let tau' := translateTau tau
-    ( stmsAddr ++ [ .load (.var temp) tau' addr ]
-    , .var temp
-    , tau'
-    , tc''
-    , tenv')
+  -- A memory read loads from the cell's address.
+  | .deref ptr tau => load tau (translateAddr cfg senv (.deref ptr tau) tc fenv tenv)
+  | .dot struct name index tau => load tau (translateAddr cfg senv (.dot struct name index tau) tc fenv tenv)
+  | .arrow ptr name index tau => load tau (translateAddr cfg senv (.arrow ptr name index tau) tc fenv tenv)
+  | .arrAccess arr index tau => load tau (translateAddr cfg senv (.arrAccess arr index tau) tc fenv tenv)
+
+termination_by (sizeOf expr, 1)
+decreasing_by
+  all_goals simp_wf
+  all_goals first
+    | (apply Prod.Lex.right; decide)
+    | (apply Prod.Lex.right; simp [addrRank])
+    | (apply Prod.Lex.left; omega)
+    | (apply Prod.Lex.left; have := List.sizeOf_lt_of_mem ‹_ ∈ args›; omega)
 
 end
 
@@ -479,12 +524,12 @@ def translateCmd
   | .call fname args =>
     let (stms, transArgs, tc', tenv') :=
       List.foldr
-      (λ expr (stmsAcc, argsAcc, tcAcc, tenvAcc) =>
+      (λ ⟨expr, _⟩ (stmsAcc, argsAcc, tcAcc, tenvAcc) =>
         let (stms', expr', _, tc', tenv') := translateExpr cfg senv expr tcAcc fenv tenvAcc
         (stms' ++ stmsAcc, expr' :: argsAcc, tc', tenv')
       )
       ([], [], tc, tenv)
-      args
+      args.attach
     let fInfo := fenv.get! fname
     let callee := calleeOfName fenv fname
     match fInfo.retTau with
@@ -503,12 +548,12 @@ def translateCmd
   | .runtimeCall fn args =>
     let (stms, transArgs, tc', tenv') :=
       List.foldr
-      (λ expr (stmsAcc, argsAcc, tcAcc, tenvAcc) =>
+      (λ ⟨expr, _⟩ (stmsAcc, argsAcc, tcAcc, tenvAcc) =>
         let (stms', expr', _, tc', tenv') := translateExpr cfg senv expr tcAcc fenv tenvAcc
         (stms' ++ stmsAcc, expr' :: argsAcc, tc', tenv')
       )
       ([], [], tc, tenv)
-      args
+      args.attach
     let callee := IR.Callee.runtime (Runtime.name fn)
     let argsTau := Runtime.argsTau fn
     let retTau := Runtime.retTau fn

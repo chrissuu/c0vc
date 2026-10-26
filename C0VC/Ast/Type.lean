@@ -85,17 +85,25 @@ def valueStructDeps : Tau → List String
   | .array _ => []
   | _ => []
 
-partial def checkStructAcyclicFrom (senv : SEnv) (stack : List String) (name : String) :
-    Except String Unit := do
-  if stack.contains name then
-    .error s!"cyclic struct definition involving struct {name}"
-  else
-    match senv.get? name with
-    | none => .error s!"struct {name} used before declaration"
-    | some fields =>
-        let stack' := name :: stack
-        fields.forM (fun (tau, _) =>
-          (valueStructDeps tau).forM (fun dep => checkStructAcyclicFrom senv stack' dep))
+/--
+Depth-first search for a struct that contains itself by value. The stack holds
+distinct declared struct names, so its depth is at most `senv.size`; the fuel
+only makes that bound visible to Lean.
+-/
+def checkStructAcyclicFrom (senv : SEnv) (stack : List String) (name : String) : Except String Unit :=
+  go (senv.size + 1) stack name
+where
+  go : Nat → List String → String → Except String Unit
+    | fuel, stack, name =>
+      if stack.contains name then
+        .error s!"cyclic struct definition involving struct {name}"
+      else
+        match senv.get? name, fuel with
+        | none, _ => .error s!"struct {name} used before declaration"
+        | some _, 0 => .error s!"cyclic struct definition involving struct {name}"
+        | some fields, fuel + 1 =>
+            fields.forM (fun (tau, _) =>
+              (valueStructDeps tau).forM (fun dep => go fuel (name :: stack) dep))
 
 def checkStructsAcyclic (senv : SEnv) : Except String Unit := do
   senv.toList.forM (fun (name, _) => checkStructAcyclicFrom senv [] name)
@@ -319,15 +327,32 @@ def locateError (span? : Option C0VC.Utils.SrcSpan.SrcSpan) (msg : String) : Str
   | none => msg
 
 mutual
-partial def tcExpr (senv : SEnv) (fenv : FEnv) (ctx : ExprCtx) (mexpr : MarkedExpr) (venv : VEnv) :
+def tcExpr (senv : SEnv) (fenv : FEnv) (ctx : ExprCtx) (mexpr : MarkedExpr) (venv : VEnv) :
     Except String C0VC.TypedAst.TypedExpr :=
   match tcExprCore senv fenv ctx mexpr venv with
   | .ok te => .ok { te with span := mexpr.span <|> te.span }
   | .error msg => .error (locateError mexpr.span msg)
+termination_by (sizeOf mexpr, 1)
+decreasing_by
+  all_goals simp_wf
+  all_goals first
+    | exact Prod.Lex.right _ (by decide)
+    | (apply Prod.Lex.left
+       first
+       | omega
+       | (simp; omega)
+       | (have h1 := MarkedExpr.sizeOf_node_lt mexpr
+          have h2 := congrArg sizeOf h
+          simp at h2
+          omega)
+       | (have h1 := MarkedLValue.sizeOf_node_lt mlv
+          have h2 := congrArg sizeOf h
+          simp at h2
+          omega))
 
-partial def tcExprCore (senv : SEnv) (fenv : FEnv) (ctx : ExprCtx) (mexpr : MarkedExpr) (venv : VEnv) :
+def tcExprCore (senv : SEnv) (fenv : FEnv) (ctx : ExprCtx) (mexpr : MarkedExpr) (venv : VEnv) :
     Except String C0VC.TypedAst.TypedExpr := do
-  match mexpr.node with
+  match h : mexpr.node with
   | .var name =>
     let info ← tcVarReadable venv name
     .ok (mkTExpr (.var name) info.varType)
@@ -437,16 +462,50 @@ partial def tcExprCore (senv : SEnv) (fenv : FEnv) (ctx : ExprCtx) (mexpr : Mark
     match tarr.tau with
     | .array tau => .ok (mkTExpr (.arrAccess tarr tindex) tau)
     | _ => .error "array access operand must have array type"
+termination_by (sizeOf mexpr, 0)
+decreasing_by
+  all_goals simp_wf
+  all_goals first
+    | exact Prod.Lex.right _ (by decide)
+    | (apply Prod.Lex.left
+       first
+       | omega
+       | (simp; omega)
+       | (have h1 := MarkedExpr.sizeOf_node_lt mexpr
+          have h2 := congrArg sizeOf h
+          simp at h2
+          omega)
+       | (have h1 := MarkedLValue.sizeOf_node_lt mlv
+          have h2 := congrArg sizeOf h
+          simp at h2
+          omega))
 
-partial def tcLValue (senv : SEnv) (fenv : FEnv) (ctx : ExprCtx) (mlv : MarkedLValue) (venv : VEnv) :
+def tcLValue (senv : SEnv) (fenv : FEnv) (ctx : ExprCtx) (mlv : MarkedLValue) (venv : VEnv) :
     Except String C0VC.TypedAst.TypedLValue :=
   match tcLValueCore senv fenv ctx mlv venv with
   | .ok tlv => .ok { tlv with span := mlv.span <|> tlv.span }
   | .error msg => .error (locateError mlv.span msg)
+termination_by (sizeOf mlv, 1)
+decreasing_by
+  all_goals simp_wf
+  all_goals first
+    | exact Prod.Lex.right _ (by decide)
+    | (apply Prod.Lex.left
+       first
+       | omega
+       | (simp; omega)
+       | (have h1 := MarkedExpr.sizeOf_node_lt mexpr
+          have h2 := congrArg sizeOf h
+          simp at h2
+          omega)
+       | (have h1 := MarkedLValue.sizeOf_node_lt mlv
+          have h2 := congrArg sizeOf h
+          simp at h2
+          omega))
 
-partial def tcLValueCore (senv : SEnv) (fenv : FEnv) (ctx : ExprCtx) (mlv : MarkedLValue) (venv : VEnv) :
+def tcLValueCore (senv : SEnv) (fenv : FEnv) (ctx : ExprCtx) (mlv : MarkedLValue) (venv : VEnv) :
     Except String C0VC.TypedAst.TypedLValue := do
-  match mlv.node with
+  match h : mlv.node with
   | .var name =>
     let info ← tcVarReadable venv name
     .ok (mkTLValue (.var name) info.varType)
@@ -477,8 +536,25 @@ partial def tcLValueCore (senv : SEnv) (fenv : FEnv) (ctx : ExprCtx) (mlv : Mark
     match tarr.tau with
     | .array tau => .ok (mkTLValue (.arrAccess tarr tindex) tau)
     | _ => .error "array lvalue access operand must have array type"
+termination_by (sizeOf mlv, 0)
+decreasing_by
+  all_goals simp_wf
+  all_goals first
+    | exact Prod.Lex.right _ (by decide)
+    | (apply Prod.Lex.left
+       first
+       | omega
+       | (simp; omega)
+       | (have h1 := MarkedExpr.sizeOf_node_lt mexpr
+          have h2 := congrArg sizeOf h
+          simp at h2
+          omega)
+       | (have h1 := MarkedLValue.sizeOf_node_lt mlv
+          have h2 := congrArg sizeOf h
+          simp at h2
+          omega))
 
-partial def tcCallArgs (senv : SEnv) (fenv : FEnv) (ctx : ExprCtx) (fname : String)
+def tcCallArgs (senv : SEnv) (fenv : FEnv) (ctx : ExprCtx) (fname : String)
     (args : List MarkedExpr) (params : List Param) (venv : VEnv) :
     Except String (List C0VC.TypedAst.TypedExpr) := do
   match args, params with
@@ -491,6 +567,23 @@ partial def tcCallArgs (senv : SEnv) (fenv : FEnv) (ctx : ExprCtx) (fname : Stri
     else
       .error s!"argument to {fname} must have type {ppTau expected}"
   | _, _ => .error s!"function {fname} called with wrong number of arguments"
+termination_by (sizeOf args, 2)
+decreasing_by
+  all_goals simp_wf
+  all_goals first
+    | exact Prod.Lex.right _ (by decide)
+    | (apply Prod.Lex.left
+       first
+       | omega
+       | (simp; omega)
+       | (have h1 := MarkedExpr.sizeOf_node_lt mexpr
+          have h2 := congrArg sizeOf h
+          simp at h2
+          omega)
+       | (have h1 := MarkedLValue.sizeOf_node_lt mlv
+          have h2 := congrArg sizeOf h
+          simp at h2
+          omega))
 end
 
 def tcExprHasType (senv : SEnv) (fenv : FEnv) (ctx : ExprCtx) (mexpr : MarkedExpr) (venv : VEnv)
@@ -522,9 +615,9 @@ def assignOpToBinOp : AssignOp → Option BinOp
   | .shlEq => some .shl
   | .shrEq => some .shr
 
-partial def materializeAsopLValue (next : Nat) (tlv : C0VC.TypedAst.TypedLValue) :
+def materializeAsopLValue (next : Nat) (tlv : C0VC.TypedAst.TypedLValue) :
     Nat × (C0VC.TypedAst.Stm → C0VC.TypedAst.Stm) × C0VC.TypedAst.TypedLValue :=
-  match tlv.node with
+  match h : tlv.node with
   | .var _ =>
     (next, id, tlv)
   | .deref ptr =>
@@ -547,38 +640,59 @@ partial def materializeAsopLValue (next : Nat) (tlv : C0VC.TypedAst.TypedLValue)
     let wrap : C0VC.TypedAst.Stm → C0VC.TypedAst.Stm := fun body =>
       wrapArr (.declare baseName arr.tau (some baseExpr) (.declare indexName .int (some index) body))
     (next' + 2, wrap, tlv')
+termination_by sizeOf tlv
+decreasing_by
+  all_goals
+    have h1 := C0VC.TypedAst.TypedLValue.sizeOf_node_lt tlv
+    have h2 := congrArg sizeOf h
+    simp at h2
+    omega
+
+/-- Typecheck `lhs = val`. -/
+def tcAssign (senv : SEnv) (fenv : FEnv) (lhs : MarkedLValue) (val : MarkedExpr) (venv : VEnv) :
+    Except String (C0VC.TypedAst.Stm × VEnv) := do
+  match lhs.node with
+  | .var varName =>
+    let varInfo ← tcVarDeclared venv varName
+    let _ ← tcSmallType varInfo.varType "assignment target"
+    let tval ← tcExpr senv fenv .code val venv
+    let _ ← tcSmallType tval.tau "assigned expression"
+    if tauAssignable varInfo.varType tval.tau then
+      let venv' ← markVEnvInitialized venv varName
+      .ok (.assign (mkTLValue (.var varName) varInfo.varType) (coerceNullTo varInfo.varType tval), venv')
+    else
+      .error s!"assigning to {varName} an expression of different type"
+  | _ =>
+    let tlhs ← tcLValue senv fenv .code lhs venv
+    let _ ← tcSmallType tlhs.tau "assignment target"
+    let tval ← tcExpr senv fenv .code val venv
+    let _ ← tcSmallType tval.tau "assigned expression"
+    if tauAssignable tlhs.tau tval.tau then
+      .ok (.assign tlhs (coerceNullTo tlhs.tau tval), venv)
+    else
+      .error s!"assigning expression of type {ppTau tval.tau} to lvalue of type {ppTau tlhs.tau}"
 
 mutual
-partial def tcMStm (senv : SEnv) (fenv : FEnv) (expectedRet : Tau) (mstm : MarkedStm) (venv : VEnv) :
+def tcMStm (senv : SEnv) (fenv : FEnv) (expectedRet : Tau) (mstm : MarkedStm) (venv : VEnv) :
     Except String (C0VC.TypedAst.Stm × VEnv) :=
   match tcMStmCore senv fenv expectedRet mstm venv with
   | .ok result => .ok result
   | .error msg => .error (locateError mstm.span msg)
+termination_by (sizeOf mstm, 1)
+decreasing_by
+  all_goals simp_wf
+  all_goals first
+    | exact Prod.Lex.right _ (by decide)
+    | (apply Prod.Lex.left
+       have h1 := MarkedStm.sizeOf_eq mstm
+       have h2 := congrArg sizeOf h
+       simp at h2 ⊢
+       omega)
 
-partial def tcMStmCore (senv : SEnv) (fenv : FEnv) (expectedRet : Tau) (mstm : MarkedStm) (venv : VEnv) :
+def tcMStmCore (senv : SEnv) (fenv : FEnv) (expectedRet : Tau) (mstm : MarkedStm) (venv : VEnv) :
     Except String (C0VC.TypedAst.Stm × VEnv) := do
-  match mstm.node with
-  | .assign lhs val =>
-    match lhs.node with
-    | .var varName =>
-      let varInfo ← tcVarDeclared venv varName
-      let _ ← tcSmallType varInfo.varType "assignment target"
-      let tval ← tcExpr senv fenv .code val venv
-      let _ ← tcSmallType tval.tau "assigned expression"
-      if tauAssignable varInfo.varType tval.tau then
-        let venv' ← markVEnvInitialized venv varName
-        .ok (.assign (mkTLValue (.var varName) varInfo.varType) (coerceNullTo varInfo.varType tval), venv')
-      else
-        .error s!"assigning to {varName} an expression of different type"
-    | _ =>
-      let tlhs ← tcLValue senv fenv .code lhs venv
-      let _ ← tcSmallType tlhs.tau "assignment target"
-      let tval ← tcExpr senv fenv .code val venv
-      let _ ← tcSmallType tval.tau "assigned expression"
-      if tauAssignable tlhs.tau tval.tau then
-        .ok (.assign tlhs (coerceNullTo tlhs.tau tval), venv)
-      else
-        .error s!"assigning expression of type {ppTau tval.tau} to lvalue of type {ppTau tlhs.tau}"
+  match h : mstm.node with
+  | .assign lhs val => tcAssign senv fenv lhs val venv
 
   | .ifLit test thenBranch elseBranch =>
     let ttest ← tcExprHasType senv fenv .code test venv .bool "if condition"
@@ -613,8 +727,7 @@ partial def tcMStmCore (senv : SEnv) (fenv : FEnv) (expectedRet : Tau) (mstm : M
 
   | .asop lhs op value =>
     match assignOpToBinOp op with
-    | none =>
-      tcMStm senv fenv expectedRet { node := .assign lhs value, span := mstm.span } venv
+    | none => tcAssign senv fenv lhs value venv
     | some binop =>
       let tlhs ← tcLValue senv fenv .code lhs venv
       let _ ← tcSmallType tlhs.tau "assignment target"
@@ -679,6 +792,16 @@ partial def tcMStmCore (senv : SEnv) (fenv : FEnv) (expectedRet : Tau) (mstm : M
     let ta ← tcAnno senv fenv expectedRet a venv
     .ok (.annotation ta, venv)
 
+termination_by (sizeOf mstm, 0)
+decreasing_by
+  all_goals simp_wf
+  all_goals first
+    | exact Prod.Lex.right _ (by decide)
+    | (apply Prod.Lex.left
+       have h1 := MarkedStm.sizeOf_eq mstm
+       have h2 := congrArg sizeOf h
+       simp at h2 ⊢
+       omega)
 end
 
 def typedStmtGuaranteedReturn (mstm : C0VC.TypedAst.Stm) : Bool :=
@@ -763,22 +886,27 @@ def tcStructDeclFields (visibleSenv : SEnv) (name : String) (fields : List Field
     let _ ← tcValueTypeValid tau s!"field {fieldName} of struct {name}"
     tcStructFieldTypeKnown visibleSenv tau)
 
-partial def renameExprVars (σ : List (String × String)) (e : C0VC.TypedAst.TypedExpr) : C0VC.TypedAst.TypedExpr :=
-  let r := renameExprVars σ
-  let node : C0VC.TypedAst.Expr :=
-    match e.node with
-    | .var name => .var ((σ.lookup name).getD name)
-    | .binop op l rhs => .binop op (r l) (r rhs)
-    | .ternary c t f => .ternary (r c) (r t) (r f)
-    | .call fname args => .call fname (args.map r)
-    | .length a => .length (r a)
-    | .dot a field => .dot (r a) field
-    | .arrow a field => .arrow (r a) field
-    | .allocArray tau n => .allocArray tau (r n)
-    | .deref a => .deref (r a)
-    | .arrAccess a i => .arrAccess (r a) (r i)
-    | other => other
-  { e with node }
+mutual
+def renameExprVars (σ : List (String × String)) : C0VC.TypedAst.TypedExpr → C0VC.TypedAst.TypedExpr
+  | ⟨node, tau, span⟩ => { node := renameNodeVars σ node, tau, span }
+
+def renameNodeVars (σ : List (String × String)) : C0VC.TypedAst.Expr → C0VC.TypedAst.Expr
+  | .var name => .var ((σ.lookup name).getD name)
+  | .binop op l r => .binop op (renameExprVars σ l) (renameExprVars σ r)
+  | .ternary c t f => .ternary (renameExprVars σ c) (renameExprVars σ t) (renameExprVars σ f)
+  | .call fname args => .call fname (renameExprVarsList σ args)
+  | .length a => .length (renameExprVars σ a)
+  | .dot a field => .dot (renameExprVars σ a) field
+  | .arrow a field => .arrow (renameExprVars σ a) field
+  | .allocArray tau n => .allocArray tau (renameExprVars σ n)
+  | .deref a => .deref (renameExprVars σ a)
+  | .arrAccess a i => .arrAccess (renameExprVars σ a) (renameExprVars σ i)
+  | other => other
+
+def renameExprVarsList (σ : List (String × String)) : List C0VC.TypedAst.TypedExpr → List C0VC.TypedAst.TypedExpr
+  | [] => []
+  | e :: es => renameExprVars σ e :: renameExprVarsList σ es
+end
 
 def renameAnnoVars (σ : List (String × String)) : C0VC.TypedAst.Anno → C0VC.TypedAst.Anno
   | .requires e => .requires (renameExprVars σ e)
@@ -843,7 +971,7 @@ def tcEnsuresNotAssigned (f : C0VC.TypedAst.FunctionDef) : Except String Unit :=
 Annotations inside a function body must be `@assert`s, or `@loop_invariant`s
 directly after a loop header.
 -/
-partial def tcAnnotationPlacement : C0VC.TypedAst.Stm → Except String Unit
+def tcAnnotationPlacement : C0VC.TypedAst.Stm → Except String Unit
   | .annotation (.requires e) => .error (locateError e.span "@requires can only annotate a function")
   | .annotation (.ensures e) => .error (locateError e.span "@ensures can only annotate a function")
   | .annotation (.loopInvariant e) =>
@@ -853,6 +981,12 @@ partial def tcAnnotationPlacement : C0VC.TypedAst.Stm → Except String Unit
   | .seq a b => do tcAnnotationPlacement a; tcAnnotationPlacement b
   | .declare _ _ _ body => tcAnnotationPlacement body
   | _ => .ok ()
+termination_by s => sizeOf s
+decreasing_by
+  all_goals simp_wf
+  all_goals first
+    | omega
+    | (have := C0VC.TypedAst.Stm.sizeOf_peelInvariants_le body; omega)
 
 def tcProgramOrdered
     (structs : List (String × List Field))

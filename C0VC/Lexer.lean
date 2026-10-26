@@ -217,16 +217,19 @@ Length of a nested block comment that starts after its opening delimiter, at
 nesting `depth`, given `consumed` characters so far. Scans only the comment,
 so lexing stays linear in the file size.
 -/
-partial def nestedCommentLength (opening closing : String) (s : String.Slice) (depth consumed : Nat) :
-    Option Nat :=
+def nestedCommentLength (opening closing : String) (s : String.Slice) (depth consumed : Nat)
+    (fuel : Nat := 2 ^ 63) : Option Nat :=
+  match fuel with
+  | 0 => none
+  | fuel + 1 =>
   if s.isEmpty then none
   else if s.startsWith opening then
-    nestedCommentLength opening closing (s.drop opening.length) (depth + 1) (consumed + opening.length)
+    nestedCommentLength opening closing (s.drop opening.length) (depth + 1) (consumed + opening.length) fuel
   else if s.startsWith closing then
     if depth == 1 then some (consumed + closing.length)
-    else nestedCommentLength opening closing (s.drop closing.length) (depth - 1) (consumed + closing.length)
+    else nestedCommentLength opening closing (s.drop closing.length) (depth - 1) (consumed + closing.length) fuel
   else
-    nestedCommentLength opening closing (s.drop 1) depth (consumed + 1)
+    nestedCommentLength opening closing (s.drop 1) depth (consumed + 1) fuel
 
 def startsWithWord (s : String.Slice) (word : String) : Bool :=
   s.startsWith word &&
@@ -387,11 +390,13 @@ def finishTypedefTokens (typedefs : Std.HashSet String) (tokensRev : List Token)
       | _ => (tokens', typedefs)
   | none => (tokens', typedefs)
 
-partial def classifyTypedefsWith (initialTypedefs : List String) (tokens : List Token) : List Token :=
-  let rec go (typedefs : Std.HashSet String) (acc : List Token) (rest : List Token) : List Token :=
-    match rest with
-    | [] => acc.reverse
-    | tok :: toks =>
+def classifyTypedefsWith (initialTypedefs : List String) (tokens : List Token) : List Token :=
+  -- Each step consumes at least one token, so `tokens.length + 1` steps suffice.
+  let rec go (fuel : Nat) (typedefs : Std.HashSet String) (acc : List Token) (rest : List Token) : List Token :=
+    match fuel, rest with
+    | _, [] => acc.reverse
+    | 0, _ => acc.reverse ++ rest
+    | fuel + 1, tok :: toks =>
         match tok.kind with
         | .kwTypedef =>
             let rec collect (bufRev : List Token) : List Token → List Token × List Token
@@ -403,10 +408,10 @@ partial def classifyTypedefsWith (initialTypedefs : List String) (tokens : List 
                     collect (t :: bufRev) ts
             let (typedefRev, rest') := collect [tok] toks
             let (typedefTokens, typedefs') := finishTypedefTokens typedefs typedefRev
-            go typedefs' (typedefTokens.reverse ++ acc) rest'
+            go fuel typedefs' (typedefTokens.reverse ++ acc) rest'
         | _ =>
-            go typedefs (classifyTypedefToken typedefs tok :: acc) toks
-  go (Std.HashSet.ofList initialTypedefs) [] tokens
+            go fuel typedefs (classifyTypedefToken typedefs tok :: acc) toks
+  go (tokens.length + 1) (Std.HashSet.ofList initialTypedefs) [] tokens
 
 def classifyTypedefs (tokens : List Token) : List Token :=
   classifyTypedefsWith [] tokens
@@ -417,9 +422,13 @@ inductive AnnoState where
   | line
   | block
 
-partial def munchRaw (includeAnnotations : Bool) (fileName : String) (body : String) : Except String (List Token) :=
-  let rec go (s : String.Slice) (line col : Nat) (acc : List Token) (anno : AnnoState := .outside) :
+def munchRaw (includeAnnotations : Bool) (fileName : String) (body : String) : Except String (List Token) :=
+  -- Each step consumes at least one character, so `body.length + 1` steps suffice.
+  let rec go (fuel : Nat) (s : String.Slice) (line col : Nat) (acc : List Token) (anno : AnnoState := .outside) :
       Except String (List Token) :=
+    match fuel with
+    | 0 => .error s!"internal error: lexer made no progress at {fileName}:{line}:{col}"
+    | fuel + 1 =>
     if s.isEmpty then
       let loc := SrcLoc.mk line col
       let eof : Token := { kind := .eof, span := SrcSpan.mk loc loc fileName }
@@ -434,10 +443,10 @@ partial def munchRaw (includeAnnotations : Bool) (fileName : String) (body : Str
         let anno := match anno with
           | .line => if ws.toString.contains '\n' then .outside else .line
           | other => other
-        go (s.drop ws.toString.length) nextLoc.line nextLoc.col acc anno
+        go fuel (s.drop ws.toString.length) nextLoc.line nextLoc.col acc anno
       else if inAnno && s.startsWith "@" && !s.startsWith "@*/" then
         -- "In annotations, the @ character is treated as whitespace." (C0 reference)
-        go (s.drop 1) line (col + 1) acc anno
+        go fuel (s.drop 1) line (col + 1) acc anno
       else if s.startsWith "/*" && !s.startsWith "/*@" && (matchComment includeAnnotations s).isNone then
         .error s!"lexical error at {fileName}:{line}:{col}: unterminated block comment"
       else
@@ -456,7 +465,7 @@ partial def munchRaw (includeAnnotations : Bool) (fileName : String) (body : Str
           let consumed := matched.toString.length
           let nextLoc := advanceLocBySlice line col matched
           if (matchComment includeAnnotations s).isSome then
-            go (s.drop consumed) nextLoc.line nextLoc.col acc anno
+            go fuel (s.drop consumed) nextLoc.line nextLoc.col acc anno
           else
             match toTokenKind? matched with
             | some kind =>
@@ -469,10 +478,10 @@ partial def munchRaw (includeAnnotations : Bool) (fileName : String) (body : Str
                 | .openMultilineAnnotation => .block
                 | .closeMultilineAnnotation => .outside
                 | _ => anno
-              go (s.drop consumed) nextLoc.line nextLoc.col (tok :: acc) anno
+              go fuel (s.drop consumed) nextLoc.line nextLoc.col (tok :: acc) anno
             | none =>
               .error s!"lexical error at {fileName}:{line}:{col}: malformed token `{matched.toString}`"
-  go body.toSlice 1 1 []
+  go (body.length + 1) body.toSlice 1 1 []
 
 def munch (fileName : String) (body : String) : Except String (List Token) := do
   let tokens ← munchRaw true fileName body

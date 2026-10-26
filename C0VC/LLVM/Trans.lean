@@ -64,14 +64,14 @@ def exprAlreadyMaterialized : Tree.Expr → Bool
   | .const .. | .temp _ => true
   | _ => false
 
-partial def translateExpr
+def translateExpr
   (senv : SEnv)
   (texpr : C0VC.TypedAst.TypedExpr)
   (env : Std.HashMap String Temp)
   (tc : TempCounter)
   (lc : LabelCounter)
   : List Tree.Command × Tree.Expr × TempEnv × TempCounter × LabelCounter :=
-  match texpr.node with
+  match h : texpr.node with
   | .var name =>
     match env.get? name with
     | some temp => ([], .temp temp, env, tc, lc)
@@ -147,12 +147,12 @@ partial def translateExpr
 
   | .call fname args =>
     let (argCmds, argExps, env', tc', lc') := List.foldr
-      (λ arg (cmdsAcc, expsAcc, envAcc, tcAcc, lcAcc) =>
+      (λ ⟨arg, _⟩ (cmdsAcc, expsAcc, envAcc, tcAcc, lcAcc) =>
         let (cmds, exp, env'', tc''', lc'') := translateExpr senv arg envAcc tcAcc lcAcc
         (cmds ++ cmdsAcc, exp :: expsAcc, env'', tc''', lc'')
       )
       ([], [], env, tc, lc)
-      args
+      args.attach
     match texpr.tau with
     | .void => (argCmds ++ [.call fname argExps], .const .void 0, env', tc', lc')
     | _ =>
@@ -208,15 +208,24 @@ partial def translateExpr
           let expr := .arrow transStructPtr structName (lookupFieldIndex senv structName field) (translateTau texpr.tau)
           (cmdsStructPtr ++ [.move temp expr], .temp temp, env', tc'', lc')
       | _ => panic! "[Error] arrow expected pointer-to-struct type"
+termination_by sizeOf texpr
+decreasing_by
+  all_goals
+    have h1 := C0VC.TypedAst.TypedExpr.sizeOf_node_lt texpr
+    have h2 := congrArg sizeOf h
+    simp at h2
+    first
+      | omega
+      | (have := List.sizeOf_lt_of_mem ‹_ ∈ args›; omega)
 
-partial def translateLValueExpr
+def translateLValueExpr
   (senv : SEnv)
   (tlv : C0VC.TypedAst.TypedLValue)
   (env : Std.HashMap String Temp)
   (tc : TempCounter)
   (lc : LabelCounter)
   : List Tree.Command × Tree.Expr × TempEnv × TempCounter × LabelCounter :=
-  match tlv.node with
+  match h : tlv.node with
   | .var name =>
     match env.get? name with
     | some temp => ([], .temp temp, env, tc, lc)
@@ -244,6 +253,13 @@ partial def translateLValueExpr
   | .ptr (.struct structName) =>
           (cmdsStructPtr, .arrow transStructPtr structName (lookupFieldIndex senv structName field) (translateTau tlv.tau), env', tc', lc')
       | _ => panic! "[Error] arrow lvalue expected pointer-to-struct type"
+termination_by sizeOf tlv
+decreasing_by
+  all_goals
+    have h1 := C0VC.TypedAst.TypedLValue.sizeOf_node_lt tlv
+    have h2 := congrArg sizeOf h
+    simp at h2
+    omega
 
 def translatePreconditions
   (senv : SEnv)
@@ -287,7 +303,7 @@ def translatePostconditions
           panic! "[Error] loop invariant annotation found in function contract position")
     ([], env, tc, lc)
 
-partial def translateStm
+def translateStm
   (senv : SEnv)
   (ensures : List C0VC.TypedAst.Anno)
   (mstm : C0VC.TypedAst.Stm)
@@ -352,14 +368,14 @@ partial def translateStm
   | .whileLit test body =>
     -- Loop invariants (present with --dyn-check) are checked before every
     -- evaluation of the condition, including the one that exits the loop.
-    let (invariants, body) := body.peelInvariants
+    let invariants := body.peelInvariants.1
     let (cmdsInvs, env, tc, lc) := invariants.foldl
       (fun (cmdsAcc, envAcc, tcAcc, lcAcc) inv =>
         let (cmds, transInv, env', tc', lc') := translateExpr senv inv envAcc tcAcc lcAcc
         (cmdsAcc ++ cmds ++ [.runtimeCall .assert [transInv]], env', tc', lc'))
       ([], env, tc, lc)
     let (cmdsTest, transTest, env', tc', lc') := translateExpr senv test env tc lc
-    let (cmdsBody, env'', tc'', lc'') := translateStm senv ensures body env' tc' lc'
+    let (cmdsBody, env'', tc'', lc'') := translateStm senv ensures body.peelInvariants.2 env' tc' lc'
 
     let (labelGuard, lc''') := Label.bumpAndCreateNamed lc'' "cond"
     let (labelBody, lc'''') := Label.bumpAndCreateNamed lc''' "body"
@@ -449,6 +465,12 @@ partial def translateStm
     , env'
     , tc'
     , lc')
+termination_by sizeOf mstm
+decreasing_by
+  all_goals simp_wf
+  all_goals first
+    | omega
+    | (have := C0VC.TypedAst.Stm.sizeOf_peelInvariants_le body; omega)
 
 def translateParam (param : C0VC.TypedAst.Param) : Tree.Arg :=
   let (tau, name) := param
