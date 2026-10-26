@@ -1,6 +1,5 @@
 namespace C0VC.Utils.SrcSpan
 
-def tabWidth : Nat := 4
 
 /-- Location in a source file. -/
 structure SrcLoc where

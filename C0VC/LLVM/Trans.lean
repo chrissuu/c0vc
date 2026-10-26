@@ -15,11 +15,12 @@ abbrev SEnv := Std.HashMap String (List C0VC.TypedAst.Field)
 
 private def resultTempName : String := "$c0vc_result"
 
--- TODO: consider wrapping env meta things into here / change to StateM
-structure Env where
-  tempEnv : TempEnv
-  tc : TempCounter
-  lc : LabelCounter
+/-
+TODO: the translation threads (commands, expression, variable environment,
+temp counter, label counter) through every call by hand. A StateT over the
+environment and counters would remove the tuples; keep the counter order to
+leave the generated IR unchanged.
+-/
 
 def translateTau : C0VC.TypedAst.Tau → Tree.Tau
   | .int | .char => .int
@@ -37,7 +38,7 @@ def defaultValOfTau : C0VC.TypedAst.Tau → Tree.Expr
   | .void => .const .void 0
   | .ptr _ | .array _ | .null => .null
 
-  -- TODO
+  -- '\0'; strings are rejected by the typechecker.
   | .char
   | .string => .const .int 0
   | .struct _ => .null
@@ -90,10 +91,9 @@ def translateExpr
       -- in C0, division/modulus by zero is not undefined behavior and instead always
       -- raises a runtime exception.
 
-      -- TODO: Currently, we call a wrapper for div/mod ops
-      -- but to save a function call, we may not want to do this.
-      -- benchmark LLVM's inliner opt to see if this gets inlined otherwise, we should
-      -- not call this wrapper for all div/mod ops
+      -- The checks run in runtime wrappers, which are not inlined because the
+      -- runtime is a separate C file. Emitting the checks inline (compare and
+      -- branch to a cold error block) would save a call per operation.
       match op with
       | .div => .move tempRes (.runtimeCall .checkedDiv [transLhs, transRhs])
       | .mod => .move tempRes (.runtimeCall .checkedMod [transLhs, transRhs])
@@ -109,7 +109,9 @@ def translateExpr
     , tc'''
     , lc'')
 
-  -- TODO: LLVM supports select. is this really something we want to elaborate?
+  -- Ternaries are lowered to branches rather than LLVM `select`: `&&`, `||` and
+  -- `!` elaborate to ternaries, and their operands must not be evaluated
+  -- unconditionally.
   | .ternary test thenVal elseVal =>
     let (tempRes, tc') := Temp.bumpAndCreate tc
     let (cmdsTest, transTest, env', tc'', lc') := translateExpr senv test env tc' lc
@@ -142,7 +144,9 @@ def translateExpr
   | .trueLit => ([], .const .bool 1, env, tc, lc)
   | .falseLit => ([], .const .bool 0, env, tc, lc)
 
-  -- TODO: fix this. definitely not the correct handling of chars
+  -- TODO: chars are represented as i32. That is exact for C0 programs (chars
+  -- are ASCII and only compared with == and !=), but a C function returning
+  -- `char` (i8) would need an i8 type with zeroext at the external boundary.
   | .charLit c => ([], .const .int (Int32.ofNat c.toNat), env, tc, lc)
 
   | .call fname args =>
@@ -164,11 +168,11 @@ def translateExpr
       let (tempRes, tc'') := Temp.bumpAndCreate tc'
       (cmdsArrayLike ++ [.move tempRes (.runtimeCall .arrayLength [transArrayLike])], .temp tempRes, env', tc'', lc')
 
-  -- TODO
+  -- The typechecker only allows \result in @ensures, which is translated
+  -- with the result temp bound.
   | .result =>
     match env.get? resultTempName with
     | some temp => ([], .temp temp, env, tc, lc)
-    -- TODO: catch this error earlier?
     | none => panic! "[Error] \\result found outside postcondition"
   | .hastag => ([], .const .int 0, env, tc, lc)
   | .stringLit _ => ([], .const .int 0, env, tc, lc)
@@ -439,7 +443,6 @@ def translateStm
 
   | .nop => ([], env, tc, lc)
 
-  -- TODO
   | .assert test =>
     let (cmds, transTest, env', tc', lc') := translateExpr senv test env tc lc
 
@@ -475,7 +478,7 @@ decreasing_by
 def translateParam (param : C0VC.TypedAst.Param) : Tree.Arg :=
   let (tau, name) := param
 
-  -- TODO: make this cleaner. why are we creating temp from name? seems dangerous
+  -- Only used for external declarations, whose parameter names are not emitted.
   (translateTau tau, Temp.fromName name)
 
 def endsWithRet : List Tree.Command → Bool

@@ -310,6 +310,9 @@ def decodeEscapes : List Char → String
   | '\\' :: c :: rest => (decodeEscapedChar c).toString ++ decodeEscapes rest
   | c :: rest => c.toString ++ decodeEscapes rest
 
+/-- Columns a tab advances, for source locations. -/
+def tabWidth : Nat := 4
+
 -- Helper for tracking SrcLoc.
 def advanceLocByChars : Nat → Nat → List Char → SrcLoc
   | line, col, [] => SrcLoc.mk line col
@@ -319,7 +322,7 @@ def advanceLocByChars : Nat → Nat → List Char → SrcLoc
   | line, _, '\r' :: rest => advanceLocByChars (line + 1) 1 rest
   | line, _, '\n' :: rest => advanceLocByChars (line + 1) 1 rest
 
-  -- see SrcSpan for tabWidth variable. TODO: move tabWidth somewhere more visible?
+  -- A tab advances the column by `tabWidth`.
   | line, col, '\t' :: rest => advanceLocByChars line (col + tabWidth) rest
   | line, col, _ :: rest => advanceLocByChars line (col + 1) rest
 

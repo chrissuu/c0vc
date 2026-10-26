@@ -29,9 +29,8 @@ inductive Tau where
 deriving Inhabited
 
 inductive Expr where
-  -- TODO: consider changing val type to val opt type to support voids
-  -- eventually, will have to move this type to something more expressive
-  -- than ints to be able to support chars/strings/etc
+  /-- A constant. `const .void 0` stands for the result of a void call, which
+  the typechecker guarantees is never used as a value. -/
   | const (tau : Tau) (val : Int32)
   | temp (t : Temp)
   | binop (op : BinOp) (tau : Tau) (lhs : Expr) (rhs : Expr)
@@ -109,12 +108,10 @@ def ppArg (arg : Arg) : String :=
   s!"{ppTau tau} {temp.name}"
 
 def ppExpr : Expr → String
-  -- TODO: print the type of the const?
-  | .const _ val => toString val
+  | .const tau val => s!"{val}:{ppTau tau}"
   | .temp t => t.name
 
-  -- TODO: pp the type
-  | .binop op _ lhs rhs => s!"({ppExpr lhs} {ppBinOp op} {ppExpr rhs})"
+  | .binop op tau lhs rhs => s!"({ppExpr lhs} {ppBinOp op} {ppExpr rhs}):{ppTau tau}"
   | .call fname args => s!"call {fname}({String.intercalate ", " (List.map ppExpr args)})"
   | .runtimeCall fn args => s!"runtime_call {Runtime.name fn}({String.intercalate ", " (List.map ppExpr args)})"
   | .null => "NULL"
@@ -164,9 +161,8 @@ def ppExprRaw (indentLevel : Nat) : Expr → String
       s!"{spaces indentLevel}Const({val}):{ppTau tau}"
   | .temp t =>
       s!"{spaces indentLevel}Temp({t.name})"
-  -- TODO: pp the type
-  | .binop op _ lhs rhs =>
-      s!"{spaces indentLevel}Binop({ppBinOp op},\n{ppExprRaw (indentLevel + 1) lhs},\n{ppExprRaw (indentLevel + 1) rhs}\n{spaces indentLevel})"
+  | .binop op tau lhs rhs =>
+      s!"{spaces indentLevel}Binop({ppBinOp op}:{ppTau tau},\n{ppExprRaw (indentLevel + 1) lhs},\n{ppExprRaw (indentLevel + 1) rhs}\n{spaces indentLevel})"
   | .call fname args =>
       let argsStr := String.intercalate ",\n" (args.map (ppExprRaw (indentLevel + 1)))
       s!"{spaces indentLevel}Call({fname}, [\n{argsStr}\n{spaces indentLevel}])"
