@@ -435,9 +435,9 @@ private def zeroRows (span? : Option SrcSpan) (elemTau : CTau) : M (List (String
   pure (cells.filterMap fun (heap, tau) => (zeroMaps.lookup tau).map (heap, ·))
 
 mutual
-partial def lowerExpr (e : CExpr) : M (List Pre × Expr) := do
+def lowerExpr (e : CExpr) : M (List Pre × Expr) := do
   let span := e.span
-  match e.node with
+  match h : e.node with
   | .var name => pure ([], .var (← lookupVar name span))
   | .intLit n => pure ([], .intLit (normInt n))
   | .charLit c => pure ([], .intLit c.toNat)
@@ -489,11 +489,21 @@ partial def lowerExpr (e : CExpr) : M (List Pre × Expr) := do
         fail "struct values can only be used through a field access" span
       let (pre, heap, ref, elem) ← lowerAddr e
       pure (pre, heapAt heap ref elem)
+termination_by (sizeOf e, 2)
+decreasing_by
+  all_goals simp_wf
+  all_goals first
+    | exact Prod.Lex.right _ (by decide)
+    | (apply Prod.Lex.left
+       have h1 := C0VC.TypedAst.TypedExpr.sizeOf_node_lt e
+       have h2 := congrArg sizeOf h
+       simp at h2
+       omega)
 
 /-- Lower a scalar memory access to its heap map, object and element index. -/
-partial def lowerAddr (e : CExpr) : M (List Pre × String × Expr × Expr) := do
+def lowerAddr (e : CExpr) : M (List Pre × String × Expr × Expr) := do
   let span := e.span
-  match e.node with
+  match h : e.node with
   | .deref ptr => do
       let (pp, p) ← lowerExpr ptr
       let nullCheck ← obligation "null" "pointer may be NULL" span (.neq p .null)
@@ -512,25 +522,37 @@ partial def lowerAddr (e : CExpr) : M (List Pre × String × Expr × Expr) := do
       let info ← fieldInfo span root field
       pure (pp ++ [nullCheck], ← fieldMapOf span root info.offset, p, .intLit 0)
   | _ => fail "internal error: expected a memory access" span
+termination_by (sizeOf e, 1)
+decreasing_by
+  all_goals simp_wf
+  all_goals first
+    | exact Prod.Lex.right _ (by decide)
+    | (apply Prod.Lex.left
+       have h1 := C0VC.TypedAst.TypedExpr.sizeOf_node_lt e
+       have h2 := congrArg sizeOf h
+       simp at h2
+       omega)
 
 /-- Lower `arr[index]` to its object reference and checked element index. -/
-partial def lowerIndex (span? : Option SrcSpan) (arr index : CExpr) : M (List Pre × Expr × Expr) := do
+def lowerIndex (span? : Option SrcSpan) (arr index : CExpr) : M (List Pre × Expr × Expr) := do
   let (pa, a) ← lowerExpr arr
   let (pi, i) ← lowerExpr index
   let (pa, a) ← if hasCall pi then snapshot .ref pa a else pure (pa, a)
   let bounds ← obligation "bounds" "array index may be out of bounds" span?
     (mkAnd (.cmp .le (.intLit 0) i) (.cmp .lt i (lenOf a)))
   pure (pa ++ pi ++ [bounds], a, i)
+termination_by (sizeOf arr + sizeOf index + 1, 0)
+decreasing_by all_goals (simp_wf; apply Prod.Lex.left; omega)
 
 /--
 Lower a struct-typed expression to the object and element index that hold it,
 the slot of its first leaf within the outermost struct (the root), the root
 struct, and its own struct type.
 -/
-partial def lowerStructBase (e : CExpr) : M (List Pre × Expr × Expr × Nat × String × String) := do
+def lowerStructBase (e : CExpr) : M (List Pre × Expr × Expr × Nat × String × String) := do
   let span := e.span
   let sname ← structName span e.tau
-  match e.node with
+  match h : e.node with
   | .deref ptr => do
       let (pp, p) ← lowerExpr ptr
       let nullCheck ← obligation "null" "pointer may be NULL" span (.neq p .null)
@@ -549,15 +571,25 @@ partial def lowerStructBase (e : CExpr) : M (List Pre × Expr × Expr × Nat × 
       let info ← fieldInfo span root field
       pure (pp ++ [nullCheck], p, .intLit 0, info.offset, root, sname)
   | _ => fail "struct values can only be used through a field access" span
+termination_by (sizeOf e, 1)
+decreasing_by
+  all_goals simp_wf
+  all_goals first
+    | exact Prod.Lex.right _ (by decide)
+    | (apply Prod.Lex.left
+       have h1 := C0VC.TypedAst.TypedExpr.sizeOf_node_lt e
+       have h2 := congrArg sizeOf h
+       simp at h2
+       omega)
 
-partial def lowerCall (span? : Option SrcSpan) (fname : String) (args : List CExpr) (retTau : CTau) :
+def lowerCall (span? : Option SrcSpan) (fname : String) (args : List CExpr) (retTau : CTau) :
     M (List Pre × Expr) := do
   let sig ← match (← get).sigs.get? fname with
     | some sig => pure sig
     | none => fail s!"internal error: unknown function {fname}" span?
   if (← get).inSpec then
     return ← lowerSpecCall span? fname sig args
-  let lowered ← args.mapM fun arg => do
+  let lowered ← args.attach.mapM fun ⟨arg, hmem⟩ => do
     let (pre, e) ← lowerExpr arg
     pure (← lowerTau arg.span arg.tau, pre, e)
   let (pre, argExprs) ← sequenceOperands lowered
@@ -575,16 +607,22 @@ partial def lowerCall (span? : Option SrcSpan) (fname : String) (args : List CEx
       let tmp ← freshTemp "call" tau
       pure (pre ++ preconditions ++
         [.stmt (.declare tmp tau), .stmt (.call (some tmp) sig.boogieName argExprs)], .var tmp)
+termination_by (sizeOf args, 3)
+decreasing_by
+  all_goals simp_wf
+  all_goals first
+    | exact Prod.Lex.right _ (by decide)
+    | (apply Prod.Lex.left; have := List.sizeOf_lt_of_mem ‹_ ∈ args›; omega)
 
 /-- A call inside a contract applies the Boole function of a pure C0 function. -/
-partial def lowerSpecCall (span? : Option SrcSpan) (fname : String) (sig : FnSig) (args : List CExpr) :
+def lowerSpecCall (span? : Option SrcSpan) (fname : String) (sig : FnSig) (args : List CExpr) :
     M (List Pre × Expr) := do
   let st ← get
   let some fnName := st.specFns.get? fname
     | let reason := if sig.ret.isNone then "returns void"
         else "writes memory or allocates, directly or through a call"
       fail s!"contracts can only call pure functions, but {fname} {reason}" span?
-  let lowered ← args.mapM lowerExpr
+  let lowered ← args.attach.mapM fun ⟨arg, hmem⟩ => lowerExpr arg
   let argExprs := lowered.map (·.2)
   let σ := (sig.params.map (·.2.1)).zip argExprs
   let preconditions ← sig.requires.mapM fun (req, reqSpan?) => do
@@ -594,8 +632,14 @@ partial def lowerSpecCall (span? : Option SrcSpan) (fname : String) (sig : FnSig
     obligation "precondition" s!"precondition of {fname}{declared} may not hold" span? (req.subst σ)
   -- The heap maps the function reads are added once they are known.
   pure (lowered.flatMap (·.1) ++ preconditions, .fnCall fnName argExprs)
+termination_by (sizeOf args, 2)
+decreasing_by
+  all_goals simp_wf
+  all_goals first
+    | exact Prod.Lex.right _ (by decide)
+    | (apply Prod.Lex.left; have := List.sizeOf_lt_of_mem ‹_ ∈ args›; omega)
 
-partial def lowerAlloc (span? : Option SrcSpan) (elemTau : CTau) (size? : Option CExpr) :
+def lowerAlloc (span? : Option SrcSpan) (elemTau : CTau) (size? : Option CExpr) :
     M (List Pre × Expr) := do
   if (← get).inSpec then
     fail "allocation is not allowed in contracts" span?
@@ -614,6 +658,8 @@ partial def lowerAlloc (span? : Option SrcSpan) (elemTau : CTau) (size? : Option
     , .assign (.var nextRefName) (mathAdd nextRef (.mathLit 1))
     , .assign (.mapSlot (.var lenName) (.var tmp)) length ] ++ zeroes
   pure (pre ++ stms.map .stmt, .var tmp)
+termination_by (sizeOf size?, 3)
+decreasing_by all_goals (simp_wf; apply Prod.Lex.left; (try simp_all); (try omega))
 end
 
 /-! ## Statements -/
@@ -659,8 +705,27 @@ private def checkStm (kind message : String) (test : CExpr) : M (List Stmt) := d
   let label ← mkLabel kind message test.span
   pure (flush pre ++ [.check label t])
 
+def lowerAssign (lhs : CLValue) (val : CExpr) : M (List Stmt) := do
+  match lhs.node with
+  | .var name => do
+      let (pre, v) ← lowerExpr val
+      pure (flush pre ++ [.assign (.var (← lookupVar name lhs.span)) v])
+  | _ => do
+      if isStructTau lhs.tau then
+        fail "struct values cannot be assigned" lhs.span
+      let (pa, heap, ref, elem) ← lowerAddr lhs.toExpr
+      let (pv, v) ← lowerExpr val
+      let (pa, ref, elem) ←
+        if hasCall pv then do
+          let (pa, ref) ← snapshot .ref pa ref
+          let (pa, elem) ← snapshot .int pa elem
+          pure (pa, ref, elem)
+        else
+          pure (pa, ref, elem)
+      pure (flush pa ++ flush pv ++ [.assign (heapSlot heap ref elem) v])
+
 mutual
-partial def lowerStm (usesHeap tail : Bool) (stm : CStm) : M (List Stmt) := do
+def lowerStm (usesHeap tail : Bool) (stm : CStm) : M (List Stmt) := do
   match stm with
   | .nop => pure []
   | .seq first rest => do
@@ -712,28 +777,11 @@ partial def lowerStm (usesHeap tail : Bool) (stm : CStm) : M (List Stmt) := do
       let elseStms ← withScope (lowerStm usesHeap tail elseBranch)
       pure (flush pre ++ [.ifElse c thenStms elseStms])
   | .whileLit test body => lowerWhile usesHeap test body
+termination_by (sizeOf stm, 0)
+decreasing_by all_goals (simp_wf; apply Prod.Lex.left; omega)
 
-partial def lowerAssign (lhs : CLValue) (val : CExpr) : M (List Stmt) := do
-  match lhs.node with
-  | .var name => do
-      let (pre, v) ← lowerExpr val
-      pure (flush pre ++ [.assign (.var (← lookupVar name lhs.span)) v])
-  | _ => do
-      if isStructTau lhs.tau then
-        fail "struct values cannot be assigned" lhs.span
-      let (pa, heap, ref, elem) ← lowerAddr lhs.toExpr
-      let (pv, v) ← lowerExpr val
-      let (pa, ref, elem) ←
-        if hasCall pv then do
-          let (pa, ref) ← snapshot .ref pa ref
-          let (pa, elem) ← snapshot .int pa elem
-          pure (pa, ref, elem)
-        else
-          pure (pa, ref, elem)
-      pure (flush pa ++ flush pv ++ [.assign (heapSlot heap ref elem) v])
-
-partial def lowerWhile (usesHeap : Bool) (test : CExpr) (body : CStm) : M (List Stmt) := do
-  let (invs, rest) := body.peelInvariants
+def lowerWhile (usesHeap : Bool) (test : CExpr) (body : CStm) : M (List Stmt) := do
+  let invs := body.peelInvariants.1
   let invariants ← withSpec do
     invs.flatMapM fun inv => do
       let (pre, e) ← lowerExpr inv
@@ -741,7 +789,7 @@ partial def lowerWhile (usesHeap : Bool) (test : CExpr) (body : CStm) : M (List 
       let label ← mkLabel "invariant" "loop invariant may not hold" inv.span
       pure (obs ++ [(label, e)])
   let (pc, c) ← lowerExpr test
-  let bodyStms ← withScope (lowerStm usesHeap false rest)
+  let bodyStms ← withScope (lowerStm usesHeap false body.peelInvariants.2)
   let testStms := flush pc
   let assumptions ← loopAssumptions usesHeap (testStms ++ bodyStms)
   if pc.isEmpty then
@@ -752,6 +800,12 @@ partial def lowerWhile (usesHeap : Bool) (test : CExpr) (body : CStm) : M (List 
     let label ← freshName "__loop"
     let loopBody := assumptions ++ testStms ++ [.ifElse (mkNot c) [.exit label] []] ++ bodyStms
     pure ([.block label [.whileLoop (.boolLit true) invariants loopBody]] ++ assumptions)
+termination_by (sizeOf body, 1)
+decreasing_by
+  simp_wf
+  rcases Nat.lt_or_eq_of_le (C0VC.TypedAst.Stm.sizeOf_peelInvariants_le body) with h | h
+  · exact Prod.Lex.left _ _ h
+  · rw [h]; exact Prod.Lex.right _ (by decide)
 end
 
 /-! ## Procedures -/

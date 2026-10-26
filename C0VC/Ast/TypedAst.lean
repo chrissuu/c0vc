@@ -89,6 +89,9 @@ instance : Inhabited TypedExpr := ⟨{ node := .intLit 0, tau := .int }⟩
 instance : Inhabited TypedLValue := ⟨{ node := .var "", tau := .int }⟩
 instance : Inhabited Stm := ⟨.nop⟩
 
+theorem TypedExpr.sizeOf_node_lt (e : TypedExpr) : sizeOf e.node < sizeOf e := by
+  cases e; simp; omega
+
 /-! ## Traversals shared by the typechecker and the backends -/
 
 mutual
@@ -181,6 +184,9 @@ def Stm.peelInvariants : Stm → List TypedExpr × Stm
           (invs ++ moreInvs, rest')
       | _ => (invs, .seq first' rest)
   | stm => ([], stm)
+
+theorem Stm.sizeOf_peelInvariants_le (s : Stm) : sizeOf s.peelInvariants.2 ≤ sizeOf s := by
+  fun_induction Stm.peelInvariants s <;> simp_all <;> omega
 
 /-- Every expression a statement evaluates, including annotations and nested statements. -/
 def Stm.exprs : Stm → List TypedExpr
