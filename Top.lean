@@ -16,7 +16,7 @@ structure CliConfig where
   infile        : Option String := none
   typecheckOnly : Bool := false
   emit          : EmitTarget := .llvm
-  optLevel      : Nat := 0
+  optLevel      : Nat := 1
   libs          : List String := []
   unsafeMode    : Bool := false
   dumpTokens    : Bool := false
@@ -46,7 +46,7 @@ private def usage : String :=
     , "  -o FILE                write the output to FILE"
     , "  -l, --lib HEADER       use a library header (.h0)"
     , "  -t, --typecheck-only   stop after typechecking"
-    , "  -O LEVEL, --opt=LEVEL  optimization level"
+    , "  -O LEVEL, --opt=LEVEL  optimization level for --emit=exe, 0-3 (default: 1)"
     , "  --unsafe               omit runtime safety checks (LLVM)"
     , "  -d, --dyn-check        check contracts at run time (LLVM), like cc0 -d"
     , ""
@@ -61,12 +61,19 @@ private def usage : String :=
     , "debugging:"
     , "  --dump-tokens --dump-ast --dump-elab --dump-elab-raw --dump-type --dump-type-raw"
     , "  --dump-dce --dump-dce-raw --dump-tree --dump-tree-raw --dump-ir-raw --dev-no-runtime"
+    , ""
+    , "--emit=exe compiles with $CC if it is set (it must accept LLVM IR, e.g. clang),"
+    , "otherwise with the first clang found on PATH."
     ]
 
 private def parseNat (flag value : String) : Except String Nat :=
   match value.toNat? with
   | some n => .ok n
   | none => .error s!"{flag} expects a number, got `{value}`"
+
+private def parseOptLevel (flag value : String) : Except String Nat := do
+  let level ← parseNat flag value
+  if level ≤ 3 then .ok level else .error s!"{flag} expects a level from 0 to 3, got `{value}`"
 
 private def parseEmit (s : String) : Except String EmitTarget :=
   match s with
@@ -132,7 +139,7 @@ private def parseArgs : List String → CliConfig → Except String CliConfig
   | "--lib" :: lib :: rest, cfg => parseArgs rest { cfg with libs := cfg.libs.concat lib }
   | "-o" :: file :: rest, cfg => parseArgs rest { cfg with outFile := some file }
   | "-O" :: level :: rest, cfg => do
-      parseArgs rest { cfg with optLevel := ← parseNat "-O" level }
+      parseArgs rest { cfg with optLevel := ← parseOptLevel "-O" level }
   | arg :: rest, cfg => do
       let valueOf (flag : String) := (arg.drop flag.length).toString
       if arg.startsWith "--emit=" then
@@ -144,13 +151,13 @@ private def parseArgs : List String → CliConfig → Except String CliConfig
       else if arg.startsWith "--int-model=" then
         parseArgs rest { cfg with intModel := ← parseIntModel (valueOf "--int-model=") }
       else if arg.startsWith "--opt=" then
-        parseArgs rest { cfg with optLevel := ← parseNat "--opt" (valueOf "--opt=") }
+        parseArgs rest { cfg with optLevel := ← parseOptLevel "--opt" (valueOf "--opt=") }
       else if arg.startsWith "--lib=" then
         parseArgs rest { cfg with libs := cfg.libs.concat (valueOf "--lib=") }
       else if arg.startsWith "-e" && arg.length > 2 then
         parseArgs rest { cfg with emit := ← parseEmit (valueOf "-e") }
       else if arg.startsWith "-O" && arg.length > 2 then
-        parseArgs rest { cfg with optLevel := ← parseNat "-O" (valueOf "-O") }
+        parseArgs rest { cfg with optLevel := ← parseOptLevel "-O" (valueOf "-O") }
       else if arg.startsWith "-l" && arg.length > 2 then
         parseArgs rest { cfg with libs := cfg.libs.concat (valueOf "-l") }
       else if arg.startsWith "-" then
@@ -240,6 +247,22 @@ private def findRuntime : IO (Option String) := do
       return some candidate.toString
   return none
 
+/-- The C compiler for --emit=exe, as a command and leading arguments: `$CC`
+(split on spaces, as make does), else the first clang on PATH. -/
+private def findCC : IO (Option (String × Array String)) := do
+  if let some cc ← IO.getEnv "CC" then
+    match (cc.splitOn " ").filter (· ≠ "") with
+    | cmd :: args => return some (cmd, args.toArray)
+    | [] => pure ()
+  let dirs := ((← IO.getEnv "PATH").getD "").splitOn ":" |>.filter (· ≠ "")
+  let names := "clang" :: ((List.range 11).map fun i => s!"clang-{24 - i}")
+  for name in names do
+    for dir in dirs do
+      let candidate := System.FilePath.mk dir / name
+      if ← candidate.pathExists then
+        return some (candidate.toString, #[])
+  return none
+
 def main (args : List String) : IO UInt32 := do
   let cfgE := parseArgs args {}
   let cfg ← match cfgE with
@@ -270,6 +293,9 @@ def main (args : List String) : IO UInt32 := do
       if cfg.emit == .llvm then
         C0VC.LLVM.EmitLlvm.run llvmIR (outputPath cfg infile ".ll")
         return 0
+      let some (cc, ccArgs) ← findCC
+        | IO.eprintln "cannot find clang to build the executable; install clang or set CC"
+          return 1
       let exe := outputPath cfg infile ".exe"
       let ll := exe ++ ".tmp.ll"
       C0VC.LLVM.EmitLlvm.run llvmIR ll
@@ -281,7 +307,8 @@ def main (args : List String) : IO UInt32 := do
             | IO.eprintln "cannot find the c0vc runtime rt/c0vc.c; set C0VC_RUNTIME to its path"
               return 1
           pure (if cfg.libs.isEmpty then #[runtime] else #["-DC0VC_WITH_15411_LIB", runtime])
-      let out ← IO.Process.output { cmd := "clang-15", args := #["-O1", ll] ++ runtimeArgs ++ #["-o", exe] }
+      let out ← IO.Process.output
+        { cmd := cc, args := ccArgs ++ #[s!"-O{cfg.optLevel}", ll] ++ runtimeArgs ++ #["-o", exe] }
       IO.FS.removeFile ll
       if out.exitCode != 0 then
         IO.eprintln out.stderr

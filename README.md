@@ -46,7 +46,9 @@ Build the compiler with Lake:
 lake build c0vc
 ```
 
-Emit LLVM IR, or a linked executable (needs `clang-15`):
+Emit LLVM IR, or a linked executable. Executables are built with `$CC` if it
+is set (it must accept LLVM IR, e.g. clang), otherwise with the first `clang`
+on `PATH`, at `-O1` by default (`-O0` to `-O3` with `-O`):
 
 ```sh
 lake exe c0vc --emit=llvm path/to/program.c0
