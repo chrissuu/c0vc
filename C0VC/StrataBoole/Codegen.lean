@@ -28,7 +28,7 @@ private def commaSep (xs : List String) : String :=
 
 private def twoPow32 : Int := 4294967296
 
-partial def ppTau (model : IntModel) : Tau → String
+def ppTau (model : IntModel) : Tau → String
   | .int => if model == .bv32 then "bv W32" else "int"
   | .bool => "bool"
   | .ref | .math => "int"
@@ -86,7 +86,7 @@ private def truncDiv (x y : String) : String :=
   s!"(if ({x} >= 0) then (if ({y} >= 0) then ({x} div {y}) else {neg s!"({x} div {neg y})"}) " ++
   s!"else (if ({y} >= 0) then {neg s!"({neg x} div {y})"} else ({neg x} div {neg y})))"
 
-partial def ppExpr (model : IntModel) : Expr → String
+def ppExpr (model : IntModel) : Expr → String
   | .var name => name
   | .intLit n => ppIntLit model n
   | .mathLit n => ppMathLit n
@@ -134,7 +134,7 @@ private def ppLabel : Option String → String
   | some label => s!"[{label}]: "
   | none => ""
 
-partial def ppStm (model : IntModel) (level : Nat) : Stmt → List String
+def ppStm (model : IntModel) (level : Nat) : Stmt → List String
   | .declare name tau =>
       [indent level s!"var {name} : {ppTau model tau};"]
   | .assign lhs rhs =>
