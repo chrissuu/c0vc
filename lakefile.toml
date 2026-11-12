@@ -1,5 +1,6 @@
 name = "c0vc"
 version = "0.1.0"
+license = "MIT"
 defaultTargets = ["c0vc"]
 
 [[lean_lib]]
