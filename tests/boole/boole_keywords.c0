@@ -1,0 +1,15 @@
+// C0 names that are Boole keywords are renamed.
+struct goto { int fun; };
+int distinct(struct goto* have)
+//@requires have != NULL;
+//@ensures \result == have->fun;
+{
+  return have->fun;
+}
+int main() {
+  struct goto* inline = alloc(struct goto);
+  int some = distinct(inline);
+  int Type = some + 1;
+  //@assert Type == 1;
+  return 0;
+}

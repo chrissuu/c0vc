@@ -1,0 +1,7 @@
+// Nothing calls main, so its precondition is checked on entry, not assumed.
+int main()
+//@requires false;
+{
+  //@assert false;
+  return 0;
+}

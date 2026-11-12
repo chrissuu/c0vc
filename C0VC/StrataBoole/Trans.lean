@@ -21,9 +21,6 @@ Statement contexts turn obligations into `check` statements. Contract contexts
 reject statements.
 
 Memory model: see `C0VC/StrataBoole/README.md`.
-
-Author(s):
-  ~ Chris Su <chrjs@cmu.edu>
 -/
 
 namespace C0VC.StrataBoole.Trans
@@ -73,6 +70,9 @@ def lenName : String := "len"
 def objBinder : String := "__r"
 def elemBinder : String := "__e"
 
+/-- Identifiers the Boole parser rejects as names: the keywords of the Boole and
+Core grammars and of the DDM builtin dialect. Found by declaring each token of
+those grammars as a C0 variable and verifying. -/
 def booleKeywords : List String :=
   [ "program", "Boole", "type", "function", "var", "procedure", "returns", "spec"
   , "requires", "ensures", "modifies", "free", "assert", "assume", "havoc", "call"
@@ -80,7 +80,10 @@ def booleKeywords : List String :=
   , "decreases", "let", "in", "old", "result", "true", "false", "int", "bool"
   , "string", "real", "Map", "bv", "exit", "forall", "exists", "axiom", "const"
   , "div", "mod", "sdiv", "smod", "ashr", "slt", "sle", "sgt", "sge", "out", "inout"
-  , "cover", "datatype", "mapConst", "as_sint", "as_uint", "as_bv32", "C0String" ]
+  , "cover", "datatype", "mapConst", "as_sint", "as_uint", "as_bv32", "C0String"
+  , "as_bv1", "as_bv8", "as_bv16", "as_bv64", "as_bv128", "cfg", "distinct", "fun"
+  , "goto", "have", "inline", "none", "rec", "some", "Type", "indent"
+  , "perConstructor", "perField" ]
 
 def intMin : Int := -2147483648
 def intMax : Int := 2147483647
@@ -99,6 +102,8 @@ structure FnSig where
   /-- Checked preconditions over the Boole parameter names. Call sites assert them. -/
   requires : List (Expr × Option SrcSpan)
   specs : List Spec
+  /-- Declared in a header: C code, with no body. -/
+  external : Bool := false
 deriving Inhabited
 
 structure St where
@@ -416,7 +421,8 @@ private def arithObligations (op : ArithOp) (lhs rhs result : Expr) (span? : Opt
       pure [ ← obligation "shift" "shift amount may be outside [0, 32)" span?
                (.and (.cmp .le (.intLit 0) rhs) (.cmp .lt rhs (.intLit 32))) ]
   | .add | .sub | .mul =>
-      if st.cfg.intModel == .checked && !st.inSpec then
+      -- Contracts wrap at run time like code, so they get the same obligations.
+      if st.cfg.intModel == .checked then
         pure [ ← obligation "overflow" "arithmetic may overflow" span?
                  (.and (.cmp .le (.intLit intMin) result) (.cmp .le result (.intLit intMax))) ]
       else
@@ -620,6 +626,7 @@ def lowerSpecCall (span? : Option SrcSpan) (fname : String) (sig : FnSig) (args 
   let st ← get
   let some fnName := st.specFns.get? fname
     | let reason := if sig.ret.isNone then "returns void"
+        else if sig.external then "is a header function, which may have side effects"
         else "writes memory or allocates, directly or through a call"
       fail s!"contracts can only call pure functions, but {fname} {reason}" span?
   let lowered ← args.attach.mapM fun ⟨arg, hmem⟩ => lowerExpr arg
@@ -838,6 +845,9 @@ private def lowerSig (usesHeap : Bool) (f : C0VC.TypedAst.FunctionDef) : M FnSig
       f.annotations.foldlM (init := ([], [])) fun (requires, specs) anno => do
         match anno with
         | .requires e =>
+            -- Nothing calls main, so its preconditions are checked on entry
+            -- (see `lowerBody`) instead of assumed.
+            if f.fname == "main" then pure (requires, specs) else do
             let (pre, c) ← lowerExpr e
             let obs ← specObligations "preconditions" e.span pre
             let label ← mkLabel "requires" "precondition may not hold" e.span
@@ -863,7 +873,7 @@ private def lowerSig (usesHeap : Bool) (f : C0VC.TypedAst.FunctionDef) : M FnSig
         refParams.map fun (_, name, _) => { kind := .requires, expr := validRef (.var name), free := true }
       else []
     let boogieName := (← get).procNames.getD f.fname f.fname
-    pure { boogieName, params, ret, requires, specs := freeSpecs ++ specs }
+    pure { boogieName, params, ret, requires, specs := freeSpecs ++ specs, external := f.external }
 
 private def lowerBody (usesHeap : Bool) (f : C0VC.TypedAst.FunctionDef) (sig : FnSig) : M (List Stmt) := do
   resetProc f.fname
@@ -880,9 +890,14 @@ private def lowerBody (usesHeap : Bool) (f : C0VC.TypedAst.FunctionDef) (sig : F
         prelude := prelude.push (Stmt.declare localName tau) |>.push (.assign (.var localName) (.var boogieName))
       else
         bindAs c0Name boogieName tau
+    let mut entryChecks := #[]
+    if f.fname == "main" then
+      for anno in f.annotations do
+        if let .requires e := anno then
+          entryChecks := entryChecks ++ (← checkStm "requires" "precondition of main may not hold" e)
     let stms ← lowerStm usesHeap true body
     let stms := if (← get).usedExit then [Stmt.block bodyLabel stms] else stms
-    pure (prelude.toList ++ stms)
+    pure (prelude.toList ++ entryChecks.toList ++ stms)
 
 /-! ## Effects -/
 
@@ -921,11 +936,14 @@ def closeOverCalls (items : List String) (nodes : List (String × List String ×
       sets
   return sets
 
-/-- Each procedure's `modifies` set, closed over the call graph. -/
+/--
+Each procedure's `modifies` set, closed over the call graph. A procedure
+without a body is a header function, which may modify any memory.
+-/
 private def computeModifies (heapNames : List String) (procs : List (String × Option (List Stmt))) :
     Std.HashMap String (List String) :=
   closeOverCalls heapNames <| procs.map fun (name, body) =>
-    let (mods, calls) := (body.map (effectsOf heapNames)).getD ([], [])
+    let (mods, calls) := (body.map (effectsOf heapNames)).getD (heapNames, [])
     (name, mods, calls)
 
 /-! ## Programs -/
@@ -1031,11 +1049,15 @@ private def isAlloc (e : CExpr) : Bool :=
   | .alloc _ | .allocArray .. => true
   | _ => false
 
-/-- Functions that neither write memory nor allocate, directly or through calls. -/
+/--
+Functions that neither write memory nor allocate, directly or through calls.
+Header functions are never pure: they are C code, which may write memory or
+return different results for the same arguments.
+-/
 def pureFunctions (program : C0VC.TypedAst.Program) : Std.HashSet String := Id.run do
   let info := program.map fun f =>
     let exprs := f.body.flatMap C0VC.TypedAst.Stm.exprs
-    let direct := !f.external && (f.body.any stmWritesMemory || exprs.any (·.any isAlloc))
+    let direct := f.external || f.body.any stmWritesMemory || exprs.any (·.any isAlloc)
     (f.fname, direct, exprs.flatMap C0VC.TypedAst.TypedExpr.callees)
   let mut pureFns : Std.HashSet String :=
     Std.HashSet.ofList (info.filterMap fun (name, direct, _) => if direct then none else some name)
@@ -1129,10 +1151,12 @@ private def searchLoop? (body : CStm) : Option (String × CExpr × CExpr × Bool
   | [.declare i _ (some lo) .nop, .whileLit test loopBody, .ret (some after)] =>
       match test.node, flatItems loopBody, boolLitOf after with
       | .binop op v hi, [.ifLit c thenS elseS, incr], some afterB =>
-          let inclusive := match op with
-            | .lte => some true
-            | .lt => some false
-            | _ => none
+          -- With `i <= hi`, `i` wraps around when hi is INT_MAX and the loop
+          -- visits every int, so only a smaller literal bound is recognized.
+          let inclusive := match op, hi.node with
+            | .lte, .intLit k => if k < intMax then some true else none
+            | .lt, _ => some false
+            | _, _ => none
           match inclusive, flatItems thenS, flatItems elseS with
           | some incl, [.ret (some inLoop)], [] =>
               if isVar i v && isIncrement i incr && boolLitOf inLoop == some !afterB then
@@ -1335,7 +1359,7 @@ def runWithConfig (cfg : Config) (program : C0VC.TypedAst.Program) : Except Stri
       pure (f, sig, body)
     pure (procs, orderFunctions functions)
   let ((lowered, functions), st) ← action.run st0
-  let mods := computeModifies heap.names (lowered.map fun (_, sig, body) => (sig.boogieName, body))
+  let mods := computeModifies (if usesHeap then heap.names else []) (lowered.map fun (_, sig, body) => (sig.boogieName, body))
   let fnToProc : Std.HashMap String String :=
     lowered.foldl (fun acc (f, sig, _) => match st.specFns.get? f.fname with
       | some fn => acc.insert fn sig.boogieName
@@ -1369,13 +1393,21 @@ def runWithConfig (cfg : Config) (program : C0VC.TypedAst.Program) : Except Stri
       | some (.ref, name) => [{ kind := .ensures, expr := validRef (.var name), free := true }]
       | _ => []
     let frameFacts : List Spec :=
-      if usesHeap && !modifies.isEmpty && body.isSome then
+      if usesHeap && !modifies.isEmpty then
         [{ kind := .ensures, expr := heapWF heap.refMaps, free := true }] ++
         (if modifies.contains nextRefName then
           [{ kind := .ensures, expr := .mathCmp .ge nextRef (.old nextRef), free := true }]
+        else []) ++
+        -- Array lengths never change, so objects that existed before the
+        -- call keep theirs.
+        (if modifies.contains lenName then
+          let r := Expr.var objBinder
+          let existed := Expr.and (.mathCmp .lt (.mathLit 0) r) (.mathCmp .lt r (.old nextRef))
+          [{ kind := .ensures, free := true, expr := .forall [(objBinder, .math)]
+              (mkImplies existed (.eq (lenOf r) (.mapGet (.old (.var lenName)) r))) }]
         else [])
       else []
-    let resultFacts := if usesHeap && body.isSome then resultFacts else []
+    let resultFacts := if usesHeap then resultFacts else []
     { name := sig.boogieName
       params := sig.params.map fun (tau, name, _) => (tau, name)
       ret := sig.ret

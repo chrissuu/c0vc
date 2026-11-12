@@ -1,0 +1,9 @@
+// args: --int-model=checked
+// Contracts wrap at run time like code, so under the checked model their
+// arithmetic gets overflow obligations too. id(2147483647) fails this
+// postcondition at run time.
+int id(int x)
+//@ensures x + 1 > x;
+{
+  return x;
+}

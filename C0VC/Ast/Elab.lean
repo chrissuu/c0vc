@@ -20,9 +20,6 @@ AST.
 
 The elaborator also resolves typedefs that may have been defined throughout
 the source file.
-
-Author(s):
-  ~ Chris Su <chrjs@cmu.edu>
 -/
 
 import C0VC.Ast.ParsedAst

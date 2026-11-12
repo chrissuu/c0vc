@@ -1,0 +1,2 @@
+main_requires.c0:3:13: error: precondition of main may not hold [requires_L3C13]
+main_requires.c0: 1 of 2 proof obligations verified

@@ -8,9 +8,6 @@ we allow for downstream passes to not panic.
 
 This means that if you care about program to look roughly 1-1 between C0/C1 and Boole,
 the lowering should happen on the AST before elaboration and not on this DCE AST.
-
-Author(s):
-  ~ Chris Su <chrjs@cmu.edu>
 -/
 
 import C0VC.Ast.TypedAst
