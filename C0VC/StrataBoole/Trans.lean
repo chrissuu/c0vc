@@ -36,7 +36,6 @@ abbrev CExpr := C0VC.TypedAst.TypedExpr
 abbrev CLValue := C0VC.TypedAst.TypedLValue
 abbrev CStm := C0VC.TypedAst.Stm
 
-instance : Inhabited CExpr := ⟨{ node := .null, tau := .null }⟩
 
 structure Config where
   intModel : IntModel := .bv32
@@ -63,6 +62,16 @@ def zeroMaps : List (Tau × String) :=
 def zeroMapNames : List String := zeroMaps.map (·.2)
 
 def bodyLabel : String := "__body"
+
+/-- The next unallocated object id. -/
+def nextRefName : String := "nextRef"
+
+/-- Object lengths, as C0 ints. -/
+def lenName : String := "len"
+
+/-- Quantified variables of the well-formedness facts: an object and an element index. -/
+def objBinder : String := "__r"
+def elemBinder : String := "__e"
 
 def booleKeywords : List String :=
   [ "program", "Boole", "type", "function", "var", "procedure", "returns", "spec"
@@ -137,9 +146,17 @@ private def fail (msg : String) (span? : Option SrcSpan := none) : M α :=
 private def sanitize (name : String) : String :=
   String.map (fun c => if c.isAlphanum || c == '_' then c else '_') name
 
-private partial def pickName (taken : String → Bool) (base : String) (k : Nat := 0) : String :=
-  let candidate := if k == 0 then base else s!"{base}_{k}"
-  if taken candidate then pickName taken base (k + 1) else candidate
+/--
+The first of `base`, `base_1`, `base_2`, ... that is not taken. The search is
+bounded so that the function is total; no name table here comes close to the
+bound.
+-/
+private def pickName (taken : String → Bool) (base : String) : String :=
+  let candidate (k : Nat) := if k == 0 then base else s!"{base}_{k}"
+  let rec search : (fuel k : Nat) → String
+    | 0, k => candidate k
+    | fuel + 1, k => if taken (candidate k) then search fuel (k + 1) else candidate k
+  search 1000000 0
 
 private def freshName (base : String) : M String := do
   let st ← get
@@ -188,7 +205,7 @@ private def mkLabel (kind message : String) (span? : Option SrcSpan) : M String 
   let label :=
     match span? with
     | some span => pickName (st.usedLabels.contains ·) s!"{kind}_L{span.startLoc.line}C{span.startLoc.col}"
-    | none => pickName (st.usedLabels.contains ·) kind 1
+    | none => pickName (fun n => n == kind || st.usedLabels.contains n) kind
   set { st with
     usedLabels := st.usedLabels.insert label
     labels := st.labels.push { label, message, procedure := st.procName, span := span? } }
@@ -278,9 +295,9 @@ private def heapSlot (heap : String) (ref elem : Expr) : LValue :=
   .mapSlot (.mapGet (.var heap) ref) elem
 
 private def lenOf (ref : Expr) : Expr :=
-  .mapGet (.var "len") ref
+  .mapGet (.var lenName) ref
 
-private def nextRef : Expr := .var "nextRef"
+private def nextRef : Expr := .var nextRefName
 
 /-- A reference is NULL or names an allocated object. -/
 def validRef (r : Expr) : Expr :=
@@ -294,41 +311,21 @@ Heap well-formedness. It holds in every reachable C0 state, because C0 has no
 pointer arithmetic, no casts and no deallocation.
 -/
 def heapWF (refMaps : List String) : Expr :=
-  let r := Expr.var "__r"
-  let e := Expr.var "__e"
+  let r := Expr.var objBinder
+  let e := Expr.var elemBinder
   List.foldl mkAnd (.mathCmp .gt nextRef (.mathLit 0))
     ([ .eq (lenOf .null) (.intLit 0)
-     , .forall [("__r", .math)] (mkImplies (allocated r) (.cmp .le (.intLit 0) (lenOf r))) ] ++
+     , .forall [(objBinder, .math)] (mkImplies (allocated r) (.cmp .le (.intLit 0) (lenOf r))) ] ++
      refMaps.map fun m =>
-       .forall [("__r", .math), ("__e", .int)] (mkImplies (allocated r) (validRef (heapAt m r e))))
+       .forall [(objBinder, .math), (elemBinder, .int)] (mkImplies (allocated r) (validRef (heapAt m r e))))
 
 def zeroWF : Expr :=
-  let e := Expr.var "__e"
+  let e := Expr.var elemBinder
   let zeroAt (name : String) := Expr.mapGet (.var name) e
-  .forall [("__e", .int)]
+  .forall [(elemBinder, .int)]
     (List.foldl mkAnd (.eq (zeroAt "zeroInt") (.intLit 0))
       [ .eq (zeroAt "zeroBool") (.boolLit false)
       , .eq (zeroAt "zeroRef") .null ])
-
-partial def subst (σ : List (String × Expr)) : Expr → Expr
-  | .var name => (σ.lookup name).getD (.var name)
-  | .arith op a b => .arith op (subst σ a) (subst σ b)
-  | .cmp op a b => .cmp op (subst σ a) (subst σ b)
-  | .mathArith op a b => .mathArith op (subst σ a) (subst σ b)
-  | .mathCmp op a b => .mathCmp op (subst σ a) (subst σ b)
-  | .eq a b => .eq (subst σ a) (subst σ b)
-  | .neq a b => .neq (subst σ a) (subst σ b)
-  | .and a b => .and (subst σ a) (subst σ b)
-  | .or a b => .or (subst σ a) (subst σ b)
-  | .not e => .not (subst σ e)
-  | .implies a b => .implies (subst σ a) (subst σ b)
-  | .ite c t f => .ite (subst σ c) (subst σ t) (subst σ f)
-  | .mapGet m k => .mapGet (subst σ m) (subst σ k)
-  | .old e => .old (subst σ e)
-  | .forall bs body => .forall bs (subst (σ.filter fun (n, _) => !bs.any (·.1 == n)) body)
-  | .exists bs body => .exists bs (subst (σ.filter fun (n, _) => !bs.any (·.1 == n)) body)
-  | .fnCall name args => .fnCall name (args.map (subst σ))
-  | e => e
 
 /-- Formal parameter names for the heap maps of a spec function. -/
 def heapFormal (heap : String) : String := "__" ++ heap
@@ -344,11 +341,8 @@ private def onlyObligations (pres : List Pre) : Bool :=
     | .ob .. => true
     | .stmt _ => false
 
-private partial def stmtHasCall : Stmt → Bool
-  | .call .. => true
-  | .ifElse _ t f => t.any stmtHasCall || f.any stmtHasCall
-  | .whileLoop _ _ body | .block _ body => body.any stmtHasCall
-  | _ => false
+private def stmtHasCall (s : Stmt) : Bool :=
+  !s.calls.isEmpty
 
 private def hasCall (pres : List Pre) : Bool :=
   pres.any fun
@@ -379,7 +373,7 @@ private def snapshot (tau : Tau) (pres : List Pre) (e : Expr) : M (List Pre × E
     pure (pres ++ [.stmt (.declare tmp tau), .stmt (.assign (.var tmp) e)], .var tmp)
 
 /-- Combine operands evaluated left to right, protecting earlier values from later calls. -/
-private partial def sequenceOperands : List (Tau × List Pre × Expr) → M (List Pre × List Expr)
+private def sequenceOperands : List (Tau × List Pre × Expr) → M (List Pre × List Expr)
   | [] => pure ([], [])
   | (tau, pres, e) :: rest => do
       let (pres, e) ←
@@ -441,9 +435,9 @@ private def zeroRows (span? : Option SrcSpan) (elemTau : CTau) : M (List (String
   pure (cells.filterMap fun (heap, tau) => (zeroMaps.lookup tau).map (heap, ·))
 
 mutual
-partial def lowerExpr (e : CExpr) : M (List Pre × Expr) := do
+def lowerExpr (e : CExpr) : M (List Pre × Expr) := do
   let span := e.span
-  match e.node with
+  match h : e.node with
   | .var name => pure ([], .var (← lookupVar name span))
   | .intLit n => pure ([], .intLit (normInt n))
   | .charLit c => pure ([], .intLit c.toNat)
@@ -495,11 +489,21 @@ partial def lowerExpr (e : CExpr) : M (List Pre × Expr) := do
         fail "struct values can only be used through a field access" span
       let (pre, heap, ref, elem) ← lowerAddr e
       pure (pre, heapAt heap ref elem)
+termination_by (sizeOf e, 2)
+decreasing_by
+  all_goals simp_wf
+  all_goals first
+    | exact Prod.Lex.right _ (by decide)
+    | (apply Prod.Lex.left
+       have h1 := C0VC.TypedAst.TypedExpr.sizeOf_node_lt e
+       have h2 := congrArg sizeOf h
+       simp at h2
+       omega)
 
 /-- Lower a scalar memory access to its heap map, object and element index. -/
-partial def lowerAddr (e : CExpr) : M (List Pre × String × Expr × Expr) := do
+def lowerAddr (e : CExpr) : M (List Pre × String × Expr × Expr) := do
   let span := e.span
-  match e.node with
+  match h : e.node with
   | .deref ptr => do
       let (pp, p) ← lowerExpr ptr
       let nullCheck ← obligation "null" "pointer may be NULL" span (.neq p .null)
@@ -518,25 +522,37 @@ partial def lowerAddr (e : CExpr) : M (List Pre × String × Expr × Expr) := do
       let info ← fieldInfo span root field
       pure (pp ++ [nullCheck], ← fieldMapOf span root info.offset, p, .intLit 0)
   | _ => fail "internal error: expected a memory access" span
+termination_by (sizeOf e, 1)
+decreasing_by
+  all_goals simp_wf
+  all_goals first
+    | exact Prod.Lex.right _ (by decide)
+    | (apply Prod.Lex.left
+       have h1 := C0VC.TypedAst.TypedExpr.sizeOf_node_lt e
+       have h2 := congrArg sizeOf h
+       simp at h2
+       omega)
 
 /-- Lower `arr[index]` to its object reference and checked element index. -/
-partial def lowerIndex (span? : Option SrcSpan) (arr index : CExpr) : M (List Pre × Expr × Expr) := do
+def lowerIndex (span? : Option SrcSpan) (arr index : CExpr) : M (List Pre × Expr × Expr) := do
   let (pa, a) ← lowerExpr arr
   let (pi, i) ← lowerExpr index
   let (pa, a) ← if hasCall pi then snapshot .ref pa a else pure (pa, a)
   let bounds ← obligation "bounds" "array index may be out of bounds" span?
     (mkAnd (.cmp .le (.intLit 0) i) (.cmp .lt i (lenOf a)))
   pure (pa ++ pi ++ [bounds], a, i)
+termination_by (sizeOf arr + sizeOf index + 1, 0)
+decreasing_by all_goals (simp_wf; apply Prod.Lex.left; omega)
 
 /--
 Lower a struct-typed expression to the object and element index that hold it,
 the slot of its first leaf within the outermost struct (the root), the root
 struct, and its own struct type.
 -/
-partial def lowerStructBase (e : CExpr) : M (List Pre × Expr × Expr × Nat × String × String) := do
+def lowerStructBase (e : CExpr) : M (List Pre × Expr × Expr × Nat × String × String) := do
   let span := e.span
   let sname ← structName span e.tau
-  match e.node with
+  match h : e.node with
   | .deref ptr => do
       let (pp, p) ← lowerExpr ptr
       let nullCheck ← obligation "null" "pointer may be NULL" span (.neq p .null)
@@ -555,15 +571,25 @@ partial def lowerStructBase (e : CExpr) : M (List Pre × Expr × Expr × Nat × 
       let info ← fieldInfo span root field
       pure (pp ++ [nullCheck], p, .intLit 0, info.offset, root, sname)
   | _ => fail "struct values can only be used through a field access" span
+termination_by (sizeOf e, 1)
+decreasing_by
+  all_goals simp_wf
+  all_goals first
+    | exact Prod.Lex.right _ (by decide)
+    | (apply Prod.Lex.left
+       have h1 := C0VC.TypedAst.TypedExpr.sizeOf_node_lt e
+       have h2 := congrArg sizeOf h
+       simp at h2
+       omega)
 
-partial def lowerCall (span? : Option SrcSpan) (fname : String) (args : List CExpr) (retTau : CTau) :
+def lowerCall (span? : Option SrcSpan) (fname : String) (args : List CExpr) (retTau : CTau) :
     M (List Pre × Expr) := do
   let sig ← match (← get).sigs.get? fname with
     | some sig => pure sig
     | none => fail s!"internal error: unknown function {fname}" span?
   if (← get).inSpec then
     return ← lowerSpecCall span? fname sig args
-  let lowered ← args.mapM fun arg => do
+  let lowered ← args.attach.mapM fun ⟨arg, hmem⟩ => do
     let (pre, e) ← lowerExpr arg
     pure (← lowerTau arg.span arg.tau, pre, e)
   let (pre, argExprs) ← sequenceOperands lowered
@@ -572,7 +598,7 @@ partial def lowerCall (span? : Option SrcSpan) (fname : String) (args : List CEx
     let declared := match reqSpan? with
       | some span => s!" (declared at line {span.startLoc.line})"
       | none => ""
-    obligation "precondition" s!"precondition of {fname}{declared} may not hold" span? (subst σ req)
+    obligation "precondition" s!"precondition of {fname}{declared} may not hold" span? (req.subst σ)
   match retTau with
   | .void =>
       pure (pre ++ preconditions ++ [.stmt (.call none sig.boogieName argExprs)], .boolLit true)
@@ -581,27 +607,39 @@ partial def lowerCall (span? : Option SrcSpan) (fname : String) (args : List CEx
       let tmp ← freshTemp "call" tau
       pure (pre ++ preconditions ++
         [.stmt (.declare tmp tau), .stmt (.call (some tmp) sig.boogieName argExprs)], .var tmp)
+termination_by (sizeOf args, 3)
+decreasing_by
+  all_goals simp_wf
+  all_goals first
+    | exact Prod.Lex.right _ (by decide)
+    | (apply Prod.Lex.left; have := List.sizeOf_lt_of_mem ‹_ ∈ args›; omega)
 
 /-- A call inside a contract applies the Boole function of a pure C0 function. -/
-partial def lowerSpecCall (span? : Option SrcSpan) (fname : String) (sig : FnSig) (args : List CExpr) :
+def lowerSpecCall (span? : Option SrcSpan) (fname : String) (sig : FnSig) (args : List CExpr) :
     M (List Pre × Expr) := do
   let st ← get
   let some fnName := st.specFns.get? fname
     | let reason := if sig.ret.isNone then "returns void"
         else "writes memory or allocates, directly or through a call"
       fail s!"contracts can only call pure functions, but {fname} {reason}" span?
-  let lowered ← args.mapM lowerExpr
+  let lowered ← args.attach.mapM fun ⟨arg, hmem⟩ => lowerExpr arg
   let argExprs := lowered.map (·.2)
   let σ := (sig.params.map (·.2.1)).zip argExprs
   let preconditions ← sig.requires.mapM fun (req, reqSpan?) => do
     let declared := match reqSpan? with
       | some span => s!" (declared at line {span.startLoc.line})"
       | none => ""
-    obligation "precondition" s!"precondition of {fname}{declared} may not hold" span? (subst σ req)
+    obligation "precondition" s!"precondition of {fname}{declared} may not hold" span? (req.subst σ)
   -- The heap maps the function reads are added once they are known.
   pure (lowered.flatMap (·.1) ++ preconditions, .fnCall fnName argExprs)
+termination_by (sizeOf args, 2)
+decreasing_by
+  all_goals simp_wf
+  all_goals first
+    | exact Prod.Lex.right _ (by decide)
+    | (apply Prod.Lex.left; have := List.sizeOf_lt_of_mem ‹_ ∈ args›; omega)
 
-partial def lowerAlloc (span? : Option SrcSpan) (elemTau : CTau) (size? : Option CExpr) :
+def lowerAlloc (span? : Option SrcSpan) (elemTau : CTau) (size? : Option CExpr) :
     M (List Pre × Expr) := do
   if (← get).inSpec then
     fail "allocation is not allowed in contracts" span?
@@ -617,53 +655,22 @@ partial def lowerAlloc (span? : Option SrcSpan) (elemTau : CTau) (size? : Option
   let stms :=
     [ Stmt.declare tmp .ref
     , .assign (.var tmp) nextRef
-    , .assign (.var "nextRef") (mathAdd nextRef (.mathLit 1))
-    , .assign (.mapSlot (.var "len") (.var tmp)) length ] ++ zeroes
+    , .assign (.var nextRefName) (mathAdd nextRef (.mathLit 1))
+    , .assign (.mapSlot (.var lenName) (.var tmp)) length ] ++ zeroes
   pure (pre ++ stms.map .stmt, .var tmp)
+termination_by (sizeOf size?, 3)
+decreasing_by all_goals (simp_wf; apply Prod.Lex.left; (try simp_all); (try omega))
 end
 
 /-! ## Statements -/
 
-private partial def lvalueToExpr (lv : CLValue) : CExpr :=
-  let node : C0VC.TypedAst.Expr :=
-    match lv.node with
-    | .var name => .var name
-    | .deref ptr => .deref (lvalueToExpr ptr)
-    | .dot struct field => .dot (lvalueToExpr struct) field
-    | .arrow structPtr field => .arrow (lvalueToExpr structPtr) field
-    | .arrAccess arr index => .arrAccess (lvalueToExpr arr) index
-  { node, tau := lv.tau, span := lv.span }
-
-/-- Split the loop invariants that lead a loop body from the rest of the body. -/
-private partial def peelInvariants : CStm → List CExpr × CStm
-  | .annotation (.loopInvariant inv) => ([inv], .nop)
-  | .seq first rest =>
-      let (invs, first') := peelInvariants first
-      match first' with
-      | .nop =>
-          let (moreInvs, rest') := peelInvariants rest
-          (invs ++ moreInvs, rest')
-      | _ => (invs, .seq first' rest)
-  | stm => ([], stm)
-
-private partial def assignedVars : CStm → List String
-  | .assign lhs _ =>
-      match lhs.node with
-      | .var name => [name]
-      | _ => []
-  | .ifLit _ thenBranch elseBranch => assignedVars thenBranch ++ assignedVars elseBranch
-  | .whileLit _ body => assignedVars body
-  | .seq first rest => assignedVars first ++ assignedVars rest
-  | .declare _ _ _ body => assignedVars body
-  | _ => []
-
-private partial def declaredIn : Stmt → List String
+private def declaredIn : Stmt → List String
   | .declare name _ => [name]
   | .ifElse _ t f => t.flatMap declaredIn ++ f.flatMap declaredIn
   | .whileLoop _ _ body | .block _ body => body.flatMap declaredIn
   | _ => []
 
-private partial def assignedIn : Stmt → List String
+private def assignedIn : Stmt → List String
   | .assign (.var name) _ => [name]
   | .assign (.mapSlot map _) _ =>
       let rec root : Expr → List String
@@ -698,8 +705,27 @@ private def checkStm (kind message : String) (test : CExpr) : M (List Stmt) := d
   let label ← mkLabel kind message test.span
   pure (flush pre ++ [.check label t])
 
+def lowerAssign (lhs : CLValue) (val : CExpr) : M (List Stmt) := do
+  match lhs.node with
+  | .var name => do
+      let (pre, v) ← lowerExpr val
+      pure (flush pre ++ [.assign (.var (← lookupVar name lhs.span)) v])
+  | _ => do
+      if isStructTau lhs.tau then
+        fail "struct values cannot be assigned" lhs.span
+      let (pa, heap, ref, elem) ← lowerAddr lhs.toExpr
+      let (pv, v) ← lowerExpr val
+      let (pa, ref, elem) ←
+        if hasCall pv then do
+          let (pa, ref) ← snapshot .ref pa ref
+          let (pa, elem) ← snapshot .int pa elem
+          pure (pa, ref, elem)
+        else
+          pure (pa, ref, elem)
+      pure (flush pa ++ flush pv ++ [.assign (heapSlot heap ref elem) v])
+
 mutual
-partial def lowerStm (usesHeap tail : Bool) (stm : CStm) : M (List Stmt) := do
+def lowerStm (usesHeap tail : Bool) (stm : CStm) : M (List Stmt) := do
   match stm with
   | .nop => pure []
   | .seq first rest => do
@@ -751,28 +777,11 @@ partial def lowerStm (usesHeap tail : Bool) (stm : CStm) : M (List Stmt) := do
       let elseStms ← withScope (lowerStm usesHeap tail elseBranch)
       pure (flush pre ++ [.ifElse c thenStms elseStms])
   | .whileLit test body => lowerWhile usesHeap test body
+termination_by (sizeOf stm, 0)
+decreasing_by all_goals (simp_wf; apply Prod.Lex.left; omega)
 
-partial def lowerAssign (lhs : CLValue) (val : CExpr) : M (List Stmt) := do
-  match lhs.node with
-  | .var name => do
-      let (pre, v) ← lowerExpr val
-      pure (flush pre ++ [.assign (.var (← lookupVar name lhs.span)) v])
-  | _ => do
-      if isStructTau lhs.tau then
-        fail "struct values cannot be assigned" lhs.span
-      let (pa, heap, ref, elem) ← lowerAddr (lvalueToExpr lhs)
-      let (pv, v) ← lowerExpr val
-      let (pa, ref, elem) ←
-        if hasCall pv then do
-          let (pa, ref) ← snapshot .ref pa ref
-          let (pa, elem) ← snapshot .int pa elem
-          pure (pa, ref, elem)
-        else
-          pure (pa, ref, elem)
-      pure (flush pa ++ flush pv ++ [.assign (heapSlot heap ref elem) v])
-
-partial def lowerWhile (usesHeap : Bool) (test : CExpr) (body : CStm) : M (List Stmt) := do
-  let (invs, rest) := peelInvariants body
+def lowerWhile (usesHeap : Bool) (test : CExpr) (body : CStm) : M (List Stmt) := do
+  let invs := body.peelInvariants.1
   let invariants ← withSpec do
     invs.flatMapM fun inv => do
       let (pre, e) ← lowerExpr inv
@@ -780,7 +789,7 @@ partial def lowerWhile (usesHeap : Bool) (test : CExpr) (body : CStm) : M (List 
       let label ← mkLabel "invariant" "loop invariant may not hold" inv.span
       pure (obs ++ [(label, e)])
   let (pc, c) ← lowerExpr test
-  let bodyStms ← withScope (lowerStm usesHeap false rest)
+  let bodyStms ← withScope (lowerStm usesHeap false body.peelInvariants.2)
   let testStms := flush pc
   let assumptions ← loopAssumptions usesHeap (testStms ++ bodyStms)
   if pc.isEmpty then
@@ -791,6 +800,12 @@ partial def lowerWhile (usesHeap : Bool) (test : CExpr) (body : CStm) : M (List 
     let label ← freshName "__loop"
     let loopBody := assumptions ++ testStms ++ [.ifElse (mkNot c) [.exit label] []] ++ bodyStms
     pure ([.block label [.whileLoop (.boolLit true) invariants loopBody]] ++ assumptions)
+termination_by (sizeOf body, 1)
+decreasing_by
+  simp_wf
+  rcases Nat.lt_or_eq_of_le (C0VC.TypedAst.Stm.sizeOf_peelInvariants_le body) with h | h
+  · exact Prod.Lex.left _ _ h
+  · rw [h]; exact Prod.Lex.right _ (by decide)
 end
 
 /-! ## Procedures -/
@@ -854,7 +869,7 @@ private def lowerBody (usesHeap : Bool) (f : C0VC.TypedAst.FunctionDef) (sig : F
   resetProc f.fname
   withScope do
     let body := bodyStm f.body
-    let assigned := assignedVars body
+    let assigned := body.assignedVars
     let mut prelude := #[]
     for (tau, boogieName, c0Name) in sig.params do
       if assigned.contains c0Name then
@@ -872,58 +887,61 @@ private def lowerBody (usesHeap : Bool) (f : C0VC.TypedAst.FunctionDef) (sig : F
 /-! ## Effects -/
 
 /-- Heap globals written and procedures called by some statements. -/
-private partial def effectsOf (heapNames : List String) (stms : List Stmt) : List String × List String :=
-  stms.foldl
-    (fun (mods, calls) stm =>
-      match stm with
-      | .assign lhs _ =>
-          (mods ++ (assignedIn (.assign lhs (.boolLit true))).filter heapNames.contains, calls)
-      | .call _ fname _ => (mods, calls ++ [fname])
-      | .ifElse _ t f =>
-          let (m1, c1) := effectsOf heapNames t
-          let (m2, c2) := effectsOf heapNames f
-          (mods ++ m1 ++ m2, calls ++ c1 ++ c2)
-      | .whileLoop _ _ body | .block _ body =>
-          let (m, c) := effectsOf heapNames body
-          (mods ++ m, calls ++ c)
-      | _ => (mods, calls))
-    ([], [])
+private def effectsOf (heapNames : List String) : List Stmt → List String × List String
+  | [] => ([], [])
+  | stm :: rest =>
+      let (mods, calls) : List String × List String :=
+        match stm with
+        | .assign lhs _ => ((assignedIn (.assign lhs (.boolLit true))).filter heapNames.contains, [])
+        | .call _ fname _ => ([], [fname])
+        | .ifElse _ t f =>
+            let (m1, c1) := effectsOf heapNames t
+            let (m2, c2) := effectsOf heapNames f
+            (m1 ++ m2, c1 ++ c2)
+        | .whileLoop _ _ body | .block _ body => effectsOf heapNames body
+        | _ => ([], [])
+      let (restMods, restCalls) := effectsOf heapNames rest
+      (mods ++ restMods, calls ++ restCalls)
+
+/--
+Close per-procedure sets over the call graph: each procedure's set gains its
+callees' sets. Nodes are (name, own items, callees); results keep the order of
+`items`, which lists every item that can occur.
+-/
+def closeOverCalls (items : List String) (nodes : List (String × List String × List String)) :
+    Std.HashMap String (List String) := Id.run do
+  let mut sets : Std.HashMap String (List String) :=
+    nodes.foldl (fun acc (name, own, _) => acc.insert name own) {}
+  -- A set can only grow through a path of at most `nodes.length` calls.
+  for _ in [0:nodes.length + 1] do
+    sets := nodes.foldl
+      (fun acc (name, own, callees) =>
+        let all := callees.foldl (fun all callee => all ++ sets.getD callee []) own
+        acc.insert name (items.filter all.contains))
+      sets
+  return sets
 
 /-- Each procedure's `modifies` set, closed over the call graph. -/
 private def computeModifies (heapNames : List String) (procs : List (String × Option (List Stmt))) :
     Std.HashMap String (List String) :=
-  let direct := procs.map fun (name, body) =>
-    match body with
-    | some stms => (name, effectsOf heapNames stms)
-    | none => (name, ([], []))
-  let init : Std.HashMap String (List String) :=
-    direct.foldl (fun acc (name, (mods, _)) => acc.insert name mods.eraseDups) {}
-  let step (mods : Std.HashMap String (List String)) : Std.HashMap String (List String) :=
-    direct.foldl
-      (fun acc (name, (own, callees)) =>
-        let all := callees.foldl (fun all callee => all ++ mods.getD callee []) own
-        acc.insert name all.eraseDups)
-      mods
-  let order (names : List String) := heapNames.filter names.contains
-  let final := (List.range (procs.length + 1)).foldl (fun mods _ => step mods) init
-  final.fold (fun acc name mods => acc.insert name (order mods)) {}
+  closeOverCalls heapNames <| procs.map fun (name, body) =>
+    let (mods, calls) := (body.map (effectsOf heapNames)).getD ([], [])
+    (name, mods, calls)
 
 /-! ## Programs -/
 
-private partial def tauUsesHeap : CTau → Bool
+private def tauUsesHeap : CTau → Bool
   | .ptr _ | .array _ | .struct _ | .null => true
   | _ => false
 
-private partial def exprUsesHeap (e : CExpr) : Bool :=
-  tauUsesHeap e.tau ||
-  match e.node with
-  | .binop _ l r => exprUsesHeap l || exprUsesHeap r
-  | .ternary c t f => exprUsesHeap c || exprUsesHeap t || exprUsesHeap f
-  | .call _ args => args.any exprUsesHeap
-  | .length _ | .alloc _ | .allocArray .. | .deref _ | .arrAccess .. | .dot .. | .arrow .. => true
-  | _ => false
+private def exprUsesHeap (e : CExpr) : Bool :=
+  e.any fun sub =>
+    tauUsesHeap sub.tau ||
+    match sub.node with
+    | .length _ | .alloc _ | .allocArray .. | .deref _ | .arrAccess .. | .dot .. | .arrow .. => true
+    | _ => false
 
-private partial def stmUsesHeap : CStm → Bool
+private def stmUsesHeap : CStm → Bool
   | .assign lhs val => tauUsesHeap lhs.tau || exprUsesHeap val ||
       (match lhs.node with | .var _ => false | _ => true)
   | .ifLit c t f => exprUsesHeap c || stmUsesHeap t || stmUsesHeap f
@@ -975,10 +993,10 @@ def heapLayout (layout : Struct.Layout) (structs : List String) (usesStrings : B
   let maps := arrays ++ fieldDecls.toList
   return {
     fieldMaps
-    decls := [("nextRef", .math), ("len", .map .math .int)] ++
+    decls := [(nextRefName, .math), (lenName, .map .math .int)] ++
       maps.map (fun (name, tau) => (name, row tau)) ++
       zeroMaps.map fun (tau, name) => (name, Tau.map .int tau)
-    names := ["nextRef", "len"] ++ maps.map (·.1)
+    names := [nextRefName, lenName] ++ maps.map (·.1)
     refMaps := (maps.filter (·.2 == .ref)).map (·.1) }
 
 /-! ## Spec functions
@@ -997,43 +1015,7 @@ The function body is
 - uninterpreted otherwise, including for recursive functions.
 -/
 
-private def exprChildren (e : CExpr) : List CExpr :=
-  match e.node with
-  | .binop _ l r => [l, r]
-  | .ternary c t f => [c, t, f]
-  | .call _ args => args
-  | .length a | .deref a | .dot a _ | .arrow a _ => [a]
-  | .allocArray _ n => [n]
-  | .arrAccess a i => [a, i]
-  | _ => []
-
-private partial def exprAny (p : CExpr → Bool) (e : CExpr) : Bool :=
-  p e || (exprChildren e).any (exprAny p)
-
-private partial def exprCallees (e : CExpr) : List String :=
-  (match e.node with
-    | .call fname _ => [fname]
-    | _ => []) ++ (exprChildren e).flatMap exprCallees
-
-private def annoExpr : C0VC.TypedAst.Anno → CExpr
-  | .requires e | .ensures e | .asserts e | .loopInvariant e => e
-
-/-- Every expression a statement evaluates, including in nested statements. -/
-private partial def stmExprs : CStm → List CExpr
-  | .assign lhs val =>
-      (match lhs.node with
-        | .var _ => []
-        | _ => [lvalueToExpr lhs]) ++ [val]
-  | .ifLit c t f => [c] ++ stmExprs t ++ stmExprs f
-  | .whileLit c body => [c] ++ stmExprs body
-  | .ret v => v.toList
-  | .seq a b => stmExprs a ++ stmExprs b
-  | .declare _ _ init body => init.toList ++ stmExprs body
-  | .expr e | .assert e | .error e => [e]
-  | .annotation a => [annoExpr a]
-  | .nop => []
-
-private partial def stmWritesMemory : CStm → Bool
+private def stmWritesMemory : CStm → Bool
   | .assign lhs _ =>
       match lhs.node with
       | .var _ => false
@@ -1052,9 +1034,9 @@ private def isAlloc (e : CExpr) : Bool :=
 /-- Functions that neither write memory nor allocate, directly or through calls. -/
 def pureFunctions (program : C0VC.TypedAst.Program) : Std.HashSet String := Id.run do
   let info := program.map fun f =>
-    let exprs := f.body.flatMap stmExprs
-    let direct := !f.external && (f.body.any stmWritesMemory || exprs.any (exprAny isAlloc))
-    (f.fname, direct, exprs.flatMap exprCallees)
+    let exprs := f.body.flatMap C0VC.TypedAst.Stm.exprs
+    let direct := !f.external && (f.body.any stmWritesMemory || exprs.any (·.any isAlloc))
+    (f.fname, direct, exprs.flatMap C0VC.TypedAst.TypedExpr.callees)
   let mut pureFns : Std.HashSet String :=
     Std.HashSet.ofList (info.filterMap fun (name, direct, _) => if direct then none else some name)
   for _ in [0:program.length + 1] do
@@ -1064,8 +1046,8 @@ def pureFunctions (program : C0VC.TypedAst.Program) : Std.HashSet String := Id.r
       pureFns
   return pureFns
 
-private partial def stmAnnoExprs : CStm → List CExpr
-  | .annotation a => [annoExpr a]
+private def stmAnnoExprs : CStm → List CExpr
+  | .annotation a => [a.expr]
   | .ifLit _ t f => stmAnnoExprs t ++ stmAnnoExprs f
   | .whileLit _ body => stmAnnoExprs body
   | .seq a b => stmAnnoExprs a ++ stmAnnoExprs b
@@ -1079,9 +1061,9 @@ and the pure functions their bodies call.
 def contractFunctions (program : C0VC.TypedAst.Program) (pureFns : Std.HashSet String) :
     Std.HashSet String := Id.run do
   let callees : Std.HashMap String (List String) :=
-    program.foldl (fun acc f => acc.insert f.fname ((f.body.flatMap stmExprs).flatMap exprCallees)) {}
+    program.foldl (fun acc f => acc.insert f.fname ((f.body.flatMap C0VC.TypedAst.Stm.exprs).flatMap C0VC.TypedAst.TypedExpr.callees)) {}
   let seeds := program.flatMap fun f =>
-    ((f.annotations.map annoExpr) ++ f.body.flatMap stmAnnoExprs).flatMap exprCallees
+    ((f.annotations.map C0VC.TypedAst.Anno.expr) ++ f.body.flatMap stmAnnoExprs).flatMap C0VC.TypedAst.TypedExpr.callees
   let mut needed : Std.HashSet String := {}
   let mut work := seeds.filter pureFns.contains
   for _ in [0:program.length + 1] do
@@ -1100,7 +1082,7 @@ private def orderByContractCalls (program : C0VC.TypedAst.Program) : List C0VC.T
   for _ in [0:program.length + 1] do
     for f in program do
       if visited.contains f.fname then continue
-      let deps := (f.annotations.map annoExpr).flatMap exprCallees
+      let deps := (f.annotations.map C0VC.TypedAst.Anno.expr).flatMap C0VC.TypedAst.TypedExpr.callees
       if deps.all (fun d => visited.contains d || d == f.fname || !byName.contains d) then
         visited := visited.insert f.fname
         order := order.push f
@@ -1109,7 +1091,7 @@ private def orderByContractCalls (program : C0VC.TypedAst.Program) : List C0VC.T
       order := order.push f
   return order.toList
 
-private partial def flatItems : CStm → List CStm
+private def flatItems : CStm → List CStm
   | .seq a b => flatItems a ++ flatItems b
   | .declare x tau init body => [.declare x tau init .nop] ++ flatItems body
   | .nop | .annotation _ => []
@@ -1163,7 +1145,7 @@ private def searchLoop? (body : CStm) : Option (String × CExpr × CExpr × Bool
 private def notExpressionForm : M α := throw "not in expression form"
 
 /-- The value of a function body in expression form, given the value of what follows. -/
-private partial def stmtThen (stm : CStm) (rest : Option Expr) : M (Option Expr) := do
+private def stmtThen (stm : CStm) (rest : Option Expr) : M (Option Expr) := do
   match stm with
   | .nop | .annotation _ | .assert _ | .error _ | .expr _ => pure rest
   | .ret (some e) => some <$> (Prod.snd <$> lowerExpr e)
@@ -1177,14 +1159,14 @@ private partial def stmtThen (stm : CStm) (rest : Option Expr) : M (Option Expr)
       let n ← bindVar x bt
       let r ← stmtThen body rest
       pure (r.map fun r => match initE with
-        | some ie => subst [(n, ie)] r
+        | some ie => r.subst [(n, ie)]
         | none => r)
   | .assign lhs val =>
       match lhs.node with
       | .var x => do
           let n ← lookupVar x lhs.span
           let (_, v) ← lowerExpr val
-          pure (rest.map (subst [(n, v)]))
+          pure (rest.map (·.subst [(n, v)]))
       | _ => notExpressionForm
   | .ifLit c t f => do
       let (_, c') ← lowerExpr c
@@ -1229,15 +1211,6 @@ private def specBody (f : C0VC.TypedAst.FunctionDef) (sig : FnSig) : M (Option E
   modify fun st => { st with labels := saved.labels, usedLabels := saved.usedLabels }
   pure result.join
 
-private partial def fnCallsIn : Expr → List String
-  | .fnCall name args => name :: args.flatMap fnCallsIn
-  | .arith _ a b | .cmp _ a b | .mathArith _ a b | .mathCmp _ a b
-  | .eq a b | .neq a b | .and a b | .or a b | .implies a b | .mapGet a b =>
-      fnCallsIn a ++ fnCallsIn b
-  | .not e | .old e | .forall _ e | .exists _ e => fnCallsIn e
-  | .ite c t f => fnCallsIn c ++ fnCallsIn t ++ fnCallsIn f
-  | _ => []
-
 /-- Drop bodies that depend on themselves, and order definitions before their uses. -/
 private def orderFunctions (fns : List Function) : List Function := Id.run do
   let mut emitted : Std.HashSet String := Std.HashSet.ofList (fns.filter (·.body.isNone) |>.map (·.name))
@@ -1245,7 +1218,7 @@ private def orderFunctions (fns : List Function) : List Function := Id.run do
   let mut pending := fns.filter (·.body.isSome)
   for _ in [0:fns.length + 1] do
     let (ready, waiting) := pending.partition fun fn =>
-      (fn.body.map fnCallsIn |>.getD []).all emitted.contains
+      (fn.body.map Expr.fnCalls |>.getD []).all emitted.contains
     for fn in ready do
       emitted := emitted.insert fn.name
       out := out.push fn
@@ -1262,94 +1235,22 @@ those maps changes, so writes to unrelated fields keep facts such as
 application is then given its heap arguments.
 -/
 
-private partial def exprVarsIR : Expr → List String
-  | .var name => [name]
-  | .arith _ a b | .cmp _ a b | .mathArith _ a b | .mathCmp _ a b
-  | .eq a b | .neq a b | .and a b | .or a b | .implies a b | .mapGet a b =>
-      exprVarsIR a ++ exprVarsIR b
-  | .not e | .old e => exprVarsIR e
-  | .ite c t f => exprVarsIR c ++ exprVarsIR t ++ exprVarsIR f
-  | .forall bs e | .exists bs e => (exprVarsIR e).filter fun n => !bs.any (·.1 == n)
-  | .fnCall _ args => args.flatMap exprVarsIR
-  | _ => []
-
-private def lvalueExprs : LValue → List Expr
-  | .var _ => []
-  | .mapSlot map key => [map, key]
-
-private partial def stmtExprsIR : Stmt → List Expr
-  | .assign lhs rhs => lvalueExprs lhs ++ [rhs]
-  | .check _ e | .assume e => [e]
-  | .ifElse c t f => [c] ++ t.flatMap stmtExprsIR ++ f.flatMap stmtExprsIR
-  | .whileLoop c invs body => [c] ++ invs.map (·.2) ++ body.flatMap stmtExprsIR
-  | .call _ _ args => args
-  | .block _ body => body.flatMap stmtExprsIR
-  | _ => []
-
-private partial def stmtCallsIR : Stmt → List String
-  | .call _ fname _ => [fname]
-  | .ifElse _ t f => t.flatMap stmtCallsIR ++ f.flatMap stmtCallsIR
-  | .whileLoop _ _ body | .block _ body => body.flatMap stmtCallsIR
-  | _ => []
-
-private partial def mapExprIR (g : Expr → Expr) : Expr → Expr
-  | .arith op a b => g (.arith op (mapExprIR g a) (mapExprIR g b))
-  | .cmp op a b => g (.cmp op (mapExprIR g a) (mapExprIR g b))
-  | .mathArith op a b => g (.mathArith op (mapExprIR g a) (mapExprIR g b))
-  | .mathCmp op a b => g (.mathCmp op (mapExprIR g a) (mapExprIR g b))
-  | .eq a b => g (.eq (mapExprIR g a) (mapExprIR g b))
-  | .neq a b => g (.neq (mapExprIR g a) (mapExprIR g b))
-  | .and a b => g (.and (mapExprIR g a) (mapExprIR g b))
-  | .or a b => g (.or (mapExprIR g a) (mapExprIR g b))
-  | .implies a b => g (.implies (mapExprIR g a) (mapExprIR g b))
-  | .mapGet a b => g (.mapGet (mapExprIR g a) (mapExprIR g b))
-  | .not e => g (.not (mapExprIR g e))
-  | .old e => g (.old (mapExprIR g e))
-  | .ite c t f => g (.ite (mapExprIR g c) (mapExprIR g t) (mapExprIR g f))
-  | .forall bs e => g (.forall bs (mapExprIR g e))
-  | .exists bs e => g (.exists bs (mapExprIR g e))
-  | .fnCall name args => g (.fnCall name (args.map (mapExprIR g)))
-  | e => g e
-
-private partial def mapStmtIR (g : Expr → Expr) : Stmt → Stmt
-  | .assign lhs rhs =>
-      let lhs := match lhs with
-        | .var n => LValue.var n
-        | .mapSlot map key => .mapSlot (mapExprIR g map) (mapExprIR g key)
-      .assign lhs (mapExprIR g rhs)
-  | .check l e => .check l (mapExprIR g e)
-  | .assume e => .assume (mapExprIR g e)
-  | .ifElse c t f => .ifElse (mapExprIR g c) (t.map (mapStmtIR g)) (f.map (mapStmtIR g))
-  | .whileLoop c invs body =>
-      .whileLoop (mapExprIR g c) (invs.map fun (l, e) => (l, mapExprIR g e)) (body.map (mapStmtIR g))
-  | .call lhs fname args => .call lhs fname (args.map (mapExprIR g))
-  | .block l body => .block l (body.map (mapStmtIR g))
-  | stm => stm
-
 /--
 The heap maps each procedure reads, closed over calls; keyed by procedure
 name. A function without a body is assumed to read every heap map.
 -/
 private def computeReads (heapNames : List String) (fnToProc : Std.HashMap String String)
     (procs : List (String × Option (List Stmt))) : Std.HashMap String (List String) := Id.run do
-  let readable := heapNames.filter (· != "nextRef")
+  let readable := heapNames.filter (· != nextRefName)
   let direct := procs.map fun (name, body) =>
     match body with
     | none => (name, readable, ([] : List String))
     | some stms =>
-        let exprs := stms.flatMap stmtExprsIR
-        let vars := exprs.flatMap exprVarsIR
-        let fnCallees := (exprs.flatMap fnCallsIn).filterMap fnToProc.get?
-        (name, readable.filter vars.contains, stms.flatMap stmtCallsIR ++ fnCallees)
-  let mut reads : Std.HashMap String (List String) :=
-    direct.foldl (fun acc (name, own, _) => acc.insert name own) {}
-  for _ in [0:procs.length + 1] do
-    reads := direct.foldl
-      (fun acc (name, own, callees) =>
-        let all := callees.foldl (fun all callee => all ++ reads.getD callee []) own
-        acc.insert name (readable.filter all.contains))
-      reads
-  return reads
+        let exprs := stms.flatMap Stmt.exprs
+        let vars := exprs.flatMap Expr.freeVars
+        let fnCallees := (exprs.flatMap Expr.fnCalls).filterMap fnToProc.get?
+        (name, readable.filter vars.contains, stms.flatMap Stmt.calls ++ fnCallees)
+  return closeOverCalls readable direct
 
 /-- Give one application of a spec function its heap arguments. -/
 private def heapArgsAt (fnReads : Std.HashMap String (List String)) (formal : Bool) : Expr → Expr
@@ -1360,9 +1261,9 @@ private def heapArgsAt (fnReads : Std.HashMap String (List String)) (formal : Bo
 
 /-- Give every application of a spec function in an expression its heap arguments. -/
 private def addHeapArgs (fnReads : Std.HashMap String (List String)) (formal : Bool) : Expr → Expr :=
-  mapExprIR (heapArgsAt fnReads formal)
+  Expr.mapBottomUp (heapArgsAt fnReads formal)
 
-private partial def stmDeclTaus : CStm → List CTau
+private def stmDeclTaus : CStm → List CTau
   | .declare _ tau _ body => tau :: stmDeclTaus body
   | .ifLit _ t f => stmDeclTaus t ++ stmDeclTaus f
   | .whileLit _ body => stmDeclTaus body
@@ -1376,7 +1277,7 @@ private def programUsesStrings (program : C0VC.TypedAst.Program) : Bool :=
   program.any fun f =>
     isString f.retType || f.params.any (isString ·.1) ||
     f.body.any (fun stm => (stmDeclTaus stm).any isString ||
-      (stmExprs stm).any (exprAny (isString ·.tau)))
+      (C0VC.TypedAst.Stm.exprs stm).any (·.any (isString ·.tau)))
 
 def runWithConfig (cfg : Config) (program : C0VC.TypedAst.Program) : Except String Program := do
   let structs := program.flatMap (·.structs)
@@ -1388,8 +1289,8 @@ def runWithConfig (cfg : Config) (program : C0VC.TypedAst.Program) : Except Stri
       | .string => true
       | _ => false
   let fixedReserved : Std.HashSet String :=
-    Std.HashSet.ofList (booleKeywords ++ ["nextRef", "len"] ++ arrayMaps.map (·.1) ++ zeroMapNames ++
-      [cfg.resultName, bodyLabel, "__r", "__e", "__i"])
+    Std.HashSet.ofList (booleKeywords ++ [nextRefName, lenName] ++ arrayMaps.map (·.1) ++ zeroMapNames ++
+      [cfg.resultName, bodyLabel, objBinder, elemBinder])
   let heap := heapLayout layout structNames usesStrings fixedReserved
   let baseReserved : Std.HashSet String :=
     (heap.names ++ heap.names.map heapFormal).foldl (·.insert ·) fixedReserved
@@ -1445,7 +1346,7 @@ def runWithConfig (cfg : Config) (program : C0VC.TypedAst.Program) : Except Stri
     functions.foldl
       (fun acc fn =>
         let fromProc := procReads.getD (fnToProc.getD fn.name "") []
-        let fromBody := (fn.body.map exprVarsIR).getD []
+        let fromBody := (fn.body.map Expr.freeVars).getD []
         acc.insert fn.name (heap.names.filter fun h => fromProc.contains h || fromBody.contains h))
       {}
   let heapTau (h : String) := (heap.decls.lookup h).getD .math
@@ -1454,7 +1355,7 @@ def runWithConfig (cfg : Config) (program : C0VC.TypedAst.Program) : Except Stri
     let toFormal := reads.map fun h => (h, Expr.var (heapFormal h))
     { fn with
       params := reads.map (fun h => (heapTau h, heapFormal h)) ++ fn.params
-      body := fn.body.map fun b => addHeapArgs fnReads true (subst toFormal b) }
+      body := fn.body.map fun b => addHeapArgs fnReads true (b.subst toFormal) }
   let procedures := lowered.map fun (f, sig, body) =>
     let modifies := mods.getD sig.boogieName []
     let linkFacts : List Spec :=
@@ -1470,7 +1371,7 @@ def runWithConfig (cfg : Config) (program : C0VC.TypedAst.Program) : Except Stri
     let frameFacts : List Spec :=
       if usesHeap && !modifies.isEmpty && body.isSome then
         [{ kind := .ensures, expr := heapWF heap.refMaps, free := true }] ++
-        (if modifies.contains "nextRef" then
+        (if modifies.contains nextRefName then
           [{ kind := .ensures, expr := .mathCmp .ge nextRef (.old nextRef), free := true }]
         else [])
       else []
@@ -1481,7 +1382,7 @@ def runWithConfig (cfg : Config) (program : C0VC.TypedAst.Program) : Except Stri
       specs := (sig.specs ++ frameFacts ++ resultFacts ++ linkFacts).map fun spec =>
         { spec with expr := addHeapArgs fnReads false spec.expr }
       modifies
-      body := body.map (·.map (mapStmtIR (heapArgsAt fnReads false))) }
+      body := body.map (·.map (Stmt.mapExprs (addHeapArgs fnReads false))) }
   pure {
     intModel := cfg.intModel
     usesStrings := st.usesStrings

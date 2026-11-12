@@ -17,7 +17,7 @@ import C0VC.Ast.TypedAst
 
 namespace C0VC.Dce
 
-partial def dceMStm (mstm : C0VC.TypedAst.Stm) : C0VC.TypedAst.Stm × Bool :=
+def dceMStm (mstm : C0VC.TypedAst.Stm) : C0VC.TypedAst.Stm × Bool :=
   match mstm with
   | .ret _ => (mstm, true)
   | .seq first rest =>

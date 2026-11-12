@@ -41,7 +41,7 @@ void __c0vc_error(void) {
   __c0vc_abort("error statement executed");
 }
 
-void __c0vc_assert(int cond) {
+void __c0vc_assert(bool cond) {
   if (!cond) {
     __c0vc_abort("assertion failed");
   }

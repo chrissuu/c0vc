@@ -5,6 +5,7 @@ Author(s):
   ~ Chris Su <chrjs@cmu.edu>
 -/
 
+import C0VC.Utils.Literal
 import C0VC.Utils.SrcSpan
 
 open C0VC.Utils.SrcSpan
@@ -61,7 +62,7 @@ inductive Tau where
   | struct (name : String)
   | ptr (tau : Tau)
   | array (tau : Tau)
-deriving Inhabited
+deriving Inhabited, BEq
 
 mutual
 inductive Expr where
@@ -126,7 +127,7 @@ inductive Stm where
   | assign (lhs : MarkedLValue) (val : MarkedExpr)
   -- this encapsulates both ite and if statements. If no elseBranch is needed, the elseBranch is simply Nop
   | ifLit (test : MarkedExpr) (thenBranch : MarkedStm) (elseBranch : MarkedStm)
-  | whileLit (test : MarkedExpr) (body : MarkedStm) (step : MarkedStm)
+  | whileLit (test : MarkedExpr) (body : MarkedStm)
   -- none in the case of void functions.
   | ret (valOpt : Option MarkedExpr)
   | seq (first : MarkedStm) (rest : MarkedStm)
@@ -162,6 +163,15 @@ inductive GDecl where
 deriving Inhabited
 
 abbrev Program := List GDecl
+
+theorem MarkedExpr.sizeOf_node_lt (e : MarkedExpr) : sizeOf e.node < sizeOf e := by
+  cases e; simp; omega
+theorem MarkedLValue.sizeOf_node_lt (e : MarkedLValue) : sizeOf e.node < sizeOf e := by
+  cases e; simp; omega
+theorem MarkedAnno.sizeOf_node_lt (e : MarkedAnno) : sizeOf e.node < sizeOf e := by
+  cases e; simp; omega
+theorem MarkedStm.sizeOf_node_lt (e : MarkedStm) : sizeOf e.node < sizeOf e := by
+  cases e; simp; omega
 
 namespace Print
 
@@ -228,14 +238,14 @@ private def spaces (n : Nat) : String :=
   String.ofList (List.replicate (n * 2) ' ')
 
 mutual
-partial def ppExpr : Expr → String
+def ppExpr : Expr → String
   | .var id => id
   | .intLit n => toString n
   | .trueLit => "true"
   | .falseLit => "false"
   | .null => "NULL"
-  | .stringLit s => s
-  | .charLit c => toString c
+  | .stringLit s => C0VC.Utils.Literal.showString s
+  | .charLit c => C0VC.Utils.Literal.showChar c
   | .unop op operand =>
       s!"{ppUnOp op}({ppMarkedExpr operand})"
   | .binop op lhs rhs =>
@@ -243,7 +253,7 @@ partial def ppExpr : Expr → String
   | .ternary test thenBranch elseBranch =>
       s!"({ppMarkedExpr test} ? {ppMarkedExpr thenBranch} : {ppMarkedExpr elseBranch})"
   | .call fname args =>
-      let argsStr := String.intercalate ", " (args.map ppMarkedExpr)
+      let argsStr := String.intercalate ", " (ppMarkedExprList args)
       s!"{fname}({argsStr})"
   | .length arrayLike => s!"\\length ({ppMarkedExpr arrayLike})"
   | .result => "\\result"
@@ -255,20 +265,26 @@ partial def ppExpr : Expr → String
   | .deref ptr => s!"*({ppMarkedExpr ptr})"
   | .arrAccess arr index => s!"{ppMarkedExpr arr}[{ppMarkedExpr index}]"
 
-partial def ppMarkedExpr (e : MarkedExpr) : String :=
-  ppExpr e.node
+def ppMarkedExpr : MarkedExpr → String
+  | e@{ node, .. } =>
+    ppExpr node
+
+def ppMarkedExprList : List MarkedExpr → List String
+  | [] => []
+  | x :: xs => ppMarkedExpr x :: ppMarkedExprList xs
 end
 
 mutual
-partial def ppLValue : LValue → String
+def ppLValue : LValue → String
   | .var id => id
   | .deref ptr => s!"*({ppMarkedLValue ptr})"
   | .dot struct field => s!"{ppMarkedLValue struct}.{field}"
   | .arrow structPtr field => s!"{ppMarkedLValue structPtr}->{field}"
   | .arrAccess arr index => s!"{ppMarkedLValue arr}[{ppMarkedExpr index}]"
 
-partial def ppMarkedLValue (lv : MarkedLValue) : String :=
-  ppLValue lv.node
+def ppMarkedLValue : MarkedLValue → String
+  | lv@{ node, .. } =>
+    ppLValue node
 end
 
 mutual
@@ -283,7 +299,7 @@ def ppMarkedAnno (a : MarkedAnno) : String :=
 end
 
 mutual
-partial def ppStm : Stm → String
+def ppStm : Stm → String
   | .assign lhs e =>
       s!"{ppMarkedLValue lhs} = {ppMarkedExpr e};"
   | .ret valOpt =>
@@ -299,7 +315,7 @@ partial def ppStm : Stm → String
   | .error e =>
       s!"error({ppMarkedExpr e});"
   | .declare id tau init body =>
-      let bodyStr := ppStm body.node
+      let bodyStr := ppMarkedStm body
       let declStr :=
         match init with
         | some e => s!"{ppTau tau} {id} = {ppMarkedExpr e};"
@@ -314,12 +330,8 @@ partial def ppStm : Stm → String
         s!"if ({ppMarkedExpr cond}) \{\n{thenStr}\n}"
       else
         s!"if ({ppMarkedExpr cond}) \{\n{thenStr}\n} else \{\n{indent elseStr}\n}"
-  | .whileLit cond body step =>
-      let bodyStr :=
-        match step.node with
-        | .nop => ppMarkedStm body
-        | _ => s!"{ppMarkedStm body}\n{ppMarkedStm step}"
-      s!"while ({ppMarkedExpr cond}) \{\n{indent bodyStr}\n}"
+  | .whileLit cond body =>
+      s!"while ({ppMarkedExpr cond}) \{\n{indent (ppMarkedStm body)}\n}"
   | .forLit init cond update body =>
       s!"for ({trimTrailingSemicolon (ppMarkedStm init)}; {ppMarkedExpr cond}; {trimTrailingSemicolon (ppMarkedStm update)}) \{\n{indent (ppMarkedStm body)}\n}"
   | .asop lhs op e =>
@@ -329,8 +341,9 @@ partial def ppStm : Stm → String
   | .incr lhs => s!"{ppMarkedLValue lhs}++"
   | .decr lhs => s!"{ppMarkedLValue lhs}--"
 
-partial def ppMarkedStm (s : MarkedStm) : String :=
-  ppStm s.node
+def ppMarkedStm : MarkedStm → String
+  | s@{ node, .. } =>
+    ppStm node
 end
 
 def ppStms (stms : List MarkedStm) : String :=
@@ -361,7 +374,7 @@ def ppGDecl : GDecl → String
   | .sdefn name fields =>
       s!"struct {name} \{\n{ppFields fields}\n};"
   | .fdecl ret id params annotations =>
-      s!"{ppAnnos annotations}\{\n}{ppTau ret} {id}{ppParams params};"
+      s!"{ppAnnos annotations}\n{ppTau ret} {id}{ppParams params};"
   | .fdefn ret id params stms annotations =>
       if stms.isEmpty then
         s!"{ppAnnos annotations}\n{ppTau ret} {id}{ppParams params} \{\n}"
@@ -372,7 +385,7 @@ def ppProgram (program : Program) : String :=
   String.intercalate "\n\n" (program.map ppGDecl)
 
 mutual
-partial def ppStmRaw (indentLevel : Nat) : Stm → String
+def ppStmRaw (indentLevel : Nat) : Stm → String
   | .assign lhs e =>
       s!"{spaces indentLevel}Assign({ppMarkedLValue lhs}, {ppMarkedExpr e})"
   | .ret valOpt =>
@@ -389,8 +402,8 @@ partial def ppStmRaw (indentLevel : Nat) : Stm → String
       s!"{spaces indentLevel}Seq(\n{ppMarkedStmRaw (indentLevel + 1) s1},\n{ppMarkedStmRaw (indentLevel + 1) s2}\n{spaces indentLevel})"
   | .ifLit cond thenBranch elseBranch =>
       s!"{spaces indentLevel}If({ppMarkedExpr cond},\n{ppMarkedStmRaw (indentLevel + 1) thenBranch},\n{ppMarkedStmRaw (indentLevel + 1) elseBranch}\n{spaces indentLevel})"
-  | .whileLit cond body step =>
-      s!"{spaces indentLevel}While({ppMarkedExpr cond},\n{ppMarkedStmRaw (indentLevel + 1) body},\n{ppMarkedStmRaw (indentLevel + 1) step}\n{spaces indentLevel})"
+  | .whileLit cond body =>
+      s!"{spaces indentLevel}While({ppMarkedExpr cond},\n{ppMarkedStmRaw (indentLevel + 1) body}\n{spaces indentLevel})"
   | .forLit init cond update body =>
       s!"{spaces indentLevel}For(\n{ppMarkedStmRaw (indentLevel + 1) init},\n{spaces (indentLevel + 1)}{ppMarkedExpr cond},\n{ppMarkedStmRaw (indentLevel + 1) update},\n{ppMarkedStmRaw (indentLevel + 1) body}\n{spaces indentLevel})"
   | .asop lhs op e =>
@@ -407,8 +420,9 @@ partial def ppStmRaw (indentLevel : Nat) : Stm → String
   | .decr lhs =>
       s!"{spaces indentLevel}Decr({ppMarkedLValue lhs})"
 
-partial def ppMarkedStmRaw (indentLevel : Nat) (stm : MarkedStm) : String :=
-  ppStmRaw indentLevel stm.node
+def ppMarkedStmRaw (indentLevel : Nat) : MarkedStm → String
+  | stm@{ node, .. } =>
+    ppStmRaw indentLevel node
 end
 
 def ppStmsRaw (stms : List MarkedStm) : String :=

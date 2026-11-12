@@ -53,11 +53,10 @@ def convertAssignOp : C0VC.Ast.AssignOp → C0VC.ElabbedAst.AssignOp
   | .shrEq => .shrEq
 
 mutual
-partial def convertMExpr (mexpr : C0VC.Ast.MarkedExpr) : Except String C0VC.ElabbedAst.MarkedExpr := do
-  let node ← convertExpr mexpr.node
-  .ok { node, span := mexpr.span }
+def convertMExpr : C0VC.Ast.MarkedExpr → Except String C0VC.ElabbedAst.MarkedExpr
+  | ⟨node, span⟩ => do .ok { node := ← convertExpr node, span }
 
-partial def convertExpr : C0VC.Ast.Expr → Except String C0VC.ElabbedAst.Expr
+def convertExpr : C0VC.Ast.Expr → Except String C0VC.ElabbedAst.Expr
   | .var name => .ok (.var name)
   | .intLit val => .ok (.intLit val)
   | .binop op lhs rhs => do
@@ -78,8 +77,7 @@ partial def convertExpr : C0VC.Ast.Expr → Except String C0VC.ElabbedAst.Expr
   | .charLit char => .ok (.charLit char)
   | .stringLit string => .ok (.stringLit string)
   | .call fname args => do
-      let args' ← args.mapM convertMExpr
-      .ok (.call fname args')
+      .ok (.call fname (← convertMExprList args))
   | .length arrayLike => do
       let arrayLike' ← convertMExpr arrayLike
       .ok (.length arrayLike')
@@ -105,14 +103,17 @@ partial def convertExpr : C0VC.Ast.Expr → Except String C0VC.ElabbedAst.Expr
       let arr' ← convertMExpr arr
       let index' ← convertMExpr index
       .ok (.arrAccess arr' index')
+
+def convertMExprList : List C0VC.Ast.MarkedExpr → Except String (List C0VC.ElabbedAst.MarkedExpr)
+  | [] => .ok []
+  | e :: es => do .ok ((← convertMExpr e) :: (← convertMExprList es))
 end
 
 mutual
-partial def convertMLValue (mlv : C0VC.Ast.MarkedLValue) : Except String C0VC.ElabbedAst.MarkedLValue := do
-  let node ← convertLValue mlv.node
-  .ok { node, span := mlv.span }
+def convertMLValue : C0VC.Ast.MarkedLValue → Except String C0VC.ElabbedAst.MarkedLValue
+  | ⟨node, span⟩ => do .ok { node := ← convertLValue node, span }
 
-partial def convertLValue : C0VC.Ast.LValue → Except String C0VC.ElabbedAst.LValue
+def convertLValue : C0VC.Ast.LValue → Except String C0VC.ElabbedAst.LValue
   | .var name => .ok (.var name)
   | .deref ptr => do
       let ptr' ← convertMLValue ptr
@@ -130,11 +131,11 @@ partial def convertLValue : C0VC.Ast.LValue → Except String C0VC.ElabbedAst.LV
 end
 
 mutual
-partial def convertMAnno (manno : C0VC.Ast.MarkedAnno) : Except String C0VC.ElabbedAst.MarkedAnno := do
+def convertMAnno (manno : C0VC.Ast.MarkedAnno) : Except String C0VC.ElabbedAst.MarkedAnno := do
   let node ← convertAnno manno.node
   .ok { node, span := manno.span }
 
-partial def convertAnno : C0VC.Ast.Anno → Except String C0VC.ElabbedAst.Anno
+def convertAnno : C0VC.Ast.Anno → Except String C0VC.ElabbedAst.Anno
   | .requires precondition => do
       let precondition' ← convertMExpr precondition
       .ok (.requires precondition')
@@ -150,11 +151,10 @@ partial def convertAnno : C0VC.Ast.Anno → Except String C0VC.ElabbedAst.Anno
 end
 
 mutual
-partial def convertMStm (mstm : C0VC.Ast.MarkedStm) : Except String C0VC.ElabbedAst.MarkedStm := do
-  let node ← convertStm mstm.node
-  .ok { node, span := mstm.span }
+def convertMStm : C0VC.Ast.MarkedStm → Except String C0VC.ElabbedAst.MarkedStm
+  | ⟨node, span⟩ => do .ok { node := ← convertStm node, span }
 
-partial def convertStm : C0VC.Ast.Stm → Except String C0VC.ElabbedAst.Stm
+def convertStm : C0VC.Ast.Stm → Except String C0VC.ElabbedAst.Stm
   | .assign lhs val => do
       let lhs' ← convertMLValue lhs
       let val' ← convertMExpr val
@@ -164,11 +164,8 @@ partial def convertStm : C0VC.Ast.Stm → Except String C0VC.ElabbedAst.Stm
       let thenBranch' ← convertMStm thenBranch
       let elseBranch' ← convertMStm elseBranch
       .ok (.ifLit test' thenBranch' elseBranch')
-  | .whileLit test body step => do
-      let test' ← convertMExpr test
-      let body' ← convertMStm body
-      let step' ← convertMStm step
-      .ok (.whileLit test' body' step')
+  | .whileLit test body => do
+      .ok (.whileLit (← convertMExpr test) (← convertMStm body))
   | .ret valOpt => do
       let valOpt' ← valOpt.mapM convertMExpr
       .ok (.ret valOpt')

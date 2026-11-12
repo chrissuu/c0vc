@@ -7,6 +7,7 @@ Author(s):
 import C0VC.Utils.Temp
 import C0VC.Utils.Label
 import C0VC.LLVM.Runtime
+import C0VC.Ast.ElabbedAst
 
 namespace C0VC.LLVM.Tree
 
@@ -14,25 +15,8 @@ open C0VC.Utils.Temp
 open C0VC.Utils.Label
 open C0VC.LLVM.Runtime
 
--- TODO: maybe consider deduplicating this definition against AST.BinOp?
-inductive BinOp where
-  | plus
-  | sub
-  | mul
-  | div
-  | mod
-  | lt
-  | lte
-  | gt
-  | gte
-  | eq
-  | neq
-  | bitAnd
-  | xor
-  | bitOr
-  | shl
-  | shr
-deriving Inhabited
+/-- The Tree uses the source binary operators unchanged. -/
+abbrev BinOp := C0VC.ElabbedAst.BinOp
 
 inductive Tau where
   | int
@@ -45,9 +29,8 @@ inductive Tau where
 deriving Inhabited
 
 inductive Expr where
-  -- TODO: consider changing val type to val opt type to support voids
-  -- eventually, will have to move this type to something more expressive
-  -- than ints to be able to support chars/strings/etc
+  /-- A constant. `const .void 0` stands for the result of a void call, which
+  the typechecker guarantees is never used as a value. -/
   | const (tau : Tau) (val : Int32)
   | temp (t : Temp)
   | binop (op : BinOp) (tau : Tau) (lhs : Expr) (rhs : Expr)
@@ -65,7 +48,8 @@ deriving Inhabited
 inductive Command where
   | declare (dest : Temp) (tau : Tau)
   | move (dest : Temp) (src : Expr)
-  | checkAddr (dest : Expr)
+  /-- Evaluate an lvalue's address once, with its checks, and bind it to `dest`. -/
+  | computeAddr (dest : Temp) (lvalue : Expr)
   | store (dest : Expr) (src : Expr)
   | call (fname : String) (args : List Expr)
   | runtimeCall (fn : Runtime.Fn) (args : List Expr)
@@ -123,13 +107,11 @@ def ppArg (arg : Arg) : String :=
   let (tau, temp) := arg
   s!"{ppTau tau} {temp.name}"
 
-partial def ppExpr : Expr → String
-  -- TODO: print the type of the const?
-  | .const _ val => toString val
+def ppExpr : Expr → String
+  | .const tau val => s!"{val}:{ppTau tau}"
   | .temp t => t.name
 
-  -- TODO: pp the type
-  | .binop op _ lhs rhs => s!"({ppExpr lhs} {ppBinOp op} {ppExpr rhs})"
+  | .binop op tau lhs rhs => s!"({ppExpr lhs} {ppBinOp op} {ppExpr rhs}):{ppTau tau}"
   | .call fname args => s!"call {fname}({String.intercalate ", " (List.map ppExpr args)})"
   | .runtimeCall fn args => s!"runtime_call {Runtime.name fn}({String.intercalate ", " (List.map ppExpr args)})"
   | .null => "NULL"
@@ -143,7 +125,7 @@ partial def ppExpr : Expr → String
 def ppCommand : Command → String
   | .declare dest tau => s!"{dest.name} : {ppTau tau};"
   | .move dest src => s!"{dest.name} <- {ppExpr src};"
-  | .checkAddr dest => s!"check_addr {ppExpr dest};"
+  | .computeAddr dest lvalue => s!"{dest.name} <- &{ppExpr lvalue};"
   | .store dest src => s!"{ppExpr dest} <- {ppExpr src};"
   | .call fname args =>
       s!"call {fname}({String.intercalate ", " (List.map ppExpr args)});"
@@ -174,14 +156,13 @@ def ppProgram (program : Program) : String :=
   String.intercalate "\n\n" (program.map ppFunctionDef)
 
 mutual
-partial def ppExprRaw (indentLevel : Nat) : Expr → String
+def ppExprRaw (indentLevel : Nat) : Expr → String
   | .const tau val =>
       s!"{spaces indentLevel}Const({val}):{ppTau tau}"
   | .temp t =>
       s!"{spaces indentLevel}Temp({t.name})"
-  -- TODO: pp the type
-  | .binop op _ lhs rhs =>
-      s!"{spaces indentLevel}Binop({ppBinOp op},\n{ppExprRaw (indentLevel + 1) lhs},\n{ppExprRaw (indentLevel + 1) rhs}\n{spaces indentLevel})"
+  | .binop op tau lhs rhs =>
+      s!"{spaces indentLevel}Binop({ppBinOp op}:{ppTau tau},\n{ppExprRaw (indentLevel + 1) lhs},\n{ppExprRaw (indentLevel + 1) rhs}\n{spaces indentLevel})"
   | .call fname args =>
       let argsStr := String.intercalate ",\n" (args.map (ppExprRaw (indentLevel + 1)))
       s!"{spaces indentLevel}Call({fname}, [\n{argsStr}\n{spaces indentLevel}])"
@@ -203,13 +184,13 @@ partial def ppExprRaw (indentLevel : Nat) : Expr → String
   | .arrAccess arr index tau =>
       s!"{spaces indentLevel}ArrAccess({ppTau tau},\n{ppExprRaw (indentLevel + 1) arr},\n{ppExprRaw (indentLevel + 1) index}\n{spaces indentLevel})"
 
-partial def ppCommandRaw (indentLevel : Nat) : Command → String
+def ppCommandRaw (indentLevel : Nat) : Command → String
   | .declare dest tau =>
       s!"{spaces indentLevel}Declare({dest.name}, {ppTau tau})"
   | .move dest src =>
       s!"{spaces indentLevel}Move({dest.name},\n{ppExprRaw (indentLevel + 1) src}\n{spaces indentLevel})"
-  | .checkAddr dest =>
-      s!"{spaces indentLevel}CheckAddr(\n{ppExprRaw (indentLevel + 1) dest}\n{spaces indentLevel})"
+  | .computeAddr dest lvalue =>
+      s!"{spaces indentLevel}ComputeAddr({dest.name},\n{ppExprRaw (indentLevel + 1) lvalue}\n{spaces indentLevel})"
   | .store dest src =>
       s!"{spaces indentLevel}Store(\n{ppExprRaw (indentLevel + 1) dest},\n{ppExprRaw (indentLevel + 1) src}\n{spaces indentLevel})"
   | .call fname args =>

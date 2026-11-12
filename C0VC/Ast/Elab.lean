@@ -48,11 +48,6 @@ structure FnInfo where
 
 abbrev FnEnv := Std.HashMap String FnInfo
 
-partial def countUnopOfType (acc : Nat) (type : UnOp) (mexp : MarkedExpr) :=
-  match mexp.node with
-  | .unop type' mexp' => if type = type' then countUnopOfType (acc + 1) type mexp' else (acc, mexp)
-  | _ => (acc, mexp)
-
 def mkElabExpr (node : Expr) (span : Option SrcSpan) : MarkedExpr :=
   MarkedExpr.mk node span
 
@@ -65,30 +60,31 @@ def mkElabStm (node : Stm) (span : Option SrcSpan) : MarkedStm :=
 def mkElabAnno (node : Anno) (span : Option SrcSpan) : MarkedAnno :=
   MarkedAnno.mk node span
 
-def mkElabLValue (node : LValue) (span : Option SrcSpan) : MarkedLValue :=
-  MarkedLValue.mk node span
-
-partial def resolveTypeName (env : Env) (seen : Std.HashSet String) : Tau → Except String Tau
-  | .typeName name =>
-      if seen.contains name then
-        .error s!"cyclic typedef involving `{name}`"
-      else
-        match env.get? name with
-        | some tau => resolveTypeName env (seen.insert name) tau
-        | none => .error s!"unknown typedef `{name}`"
-  | .ptr tau => do
-      let tau' ← resolveTypeName env seen tau
-      .ok (.ptr tau')
-  | .array tau => do
-      let tau' ← resolveTypeName env seen tau
-      .ok (.array tau')
-  | tau => .ok tau
+/--
+Expand typedef names. Each expansion adds a new name to `seen`, so a chain has
+at most `env.size` steps; the fuel only makes that bound visible to Lean.
+-/
+def resolveTypeName (env : Env) (seen : Std.HashSet String) (tau : Tau) : Except String Tau :=
+  go (env.size + 1) seen tau
+where
+  go : Nat → Std.HashSet String → Tau → Except String Tau
+    | fuel, seen, .typeName name =>
+        if seen.contains name then
+          .error s!"cyclic typedef involving `{name}`"
+        else
+          match env.get? name, fuel with
+          | some tau, fuel + 1 => go fuel (seen.insert name) tau
+          | some _, 0 => .error s!"cyclic typedef involving `{name}`"
+          | none, _ => .error s!"unknown typedef `{name}`"
+    | fuel, seen, .ptr tau => do .ok (.ptr (← go fuel seen tau))
+    | fuel, seen, .array tau => do .ok (.array (← go fuel seen tau))
+    | _, _, tau => .ok tau
 
 def elabTypeName (env : Env) (tau : Tau) : Except String Tau :=
   resolveTypeName env {} tau
 
-partial def elabMExpr (env : Env) (mexp : MarkedExpr) : Except String MarkedExpr := do
-  match mexp.node with
+def elabMExpr (env : Env) (mexp : MarkedExpr) : Except String MarkedExpr := do
+  match h : mexp.node with
   | .binop op lhs rhs =>
     match op with
     | .land =>
@@ -105,24 +101,16 @@ partial def elabMExpr (env : Env) (mexp : MarkedExpr) : Except String MarkedExpr
       .ok <| mkElabExpr (.binop op lhs' rhs') mexp.span
   | .unop op mexp' =>
     match op with
+    -- Each operator is elaborated separately, even when they cancel, so the
+    -- typechecker still sees that the operand of `!` is a bool and of `~` an int.
     | .bang =>
-      let (numBangs, reducedMexp) := countUnopOfType 1 .bang mexp'
-      let reducedMexp' ← elabMExpr env reducedMexp
-      if numBangs % 2 = 0 then
-        .ok <| mkElabExpr reducedMexp'.node mexp.span
-      else
-        .ok <| mkElabExpr
-          (.ternary reducedMexp' (mkElabExpr .falseLit mexp.span) (mkElabExpr .trueLit mexp.span))
-          mexp.span
+      let operand ← elabMExpr env mexp'
+      .ok <| mkElabExpr
+        (.ternary operand (mkElabExpr .falseLit mexp.span) (mkElabExpr .trueLit mexp.span))
+        mexp.span
     | .bitNot =>
-      let (numBitNot, reducedMexp) := countUnopOfType 1 .bitNot mexp'
-      let reducedMexp' ← elabMExpr env reducedMexp
-      if numBitNot % 2 = 0 then
-        .ok <| mkElabExpr reducedMexp'.node mexp.span
-      else
-        .ok <| mkElabExpr
-          (.binop .xor reducedMexp' (mkElabExpr (.intLit (-1)) mexp.span))
-          mexp.span
+      let operand ← elabMExpr env mexp'
+      .ok <| mkElabExpr (.binop .xor operand (mkElabExpr (.intLit (-1)) mexp.span)) mexp.span
     | .negative =>
       match mexp'.node with
       | .intLit n => .ok <| mkElabExpr (.intLit (-n)) mexp.span
@@ -136,7 +124,7 @@ partial def elabMExpr (env : Env) (mexp : MarkedExpr) : Except String MarkedExpr
     let elseBranch' ← elabMExpr env elseBranch
     .ok <| mkElabExpr (.ternary test' thenBranch' elseBranch') mexp.span
   | .call fname args =>
-    let args' ← args.mapM (elabMExpr env)
+    let args' ← args.attach.mapM fun ⟨arg, _⟩ => elabMExpr env arg
     .ok <| mkElabExpr (.call fname args') mexp.span
   | .length arrayLike =>
     let arrayLike' ← elabMExpr env arrayLike
@@ -162,13 +150,21 @@ partial def elabMExpr (env : Env) (mexp : MarkedExpr) : Except String MarkedExpr
     let index' ← elabMExpr env index
     .ok <| mkElabExpr (.arrAccess arr' index') mexp.span
   | _ => .ok mexp
+termination_by sizeOf mexp
+decreasing_by
+  all_goals
+    have h1 := MarkedExpr.sizeOf_node_lt mexp
+    have h2 := congrArg sizeOf h
+    simp at h2
+    first
+      | omega
+      | (have := List.sizeOf_lt_of_mem ‹_ ∈ args›; omega)
 
 mutual
-partial def elabMLValue (env : Env) (mlv : MarkedLValue) : Except String MarkedLValue := do
-  let node ← elabLValue env mlv.node
-  .ok { node, span := mlv.span }
+def elabMLValue (env : Env) : MarkedLValue → Except String MarkedLValue
+  | ⟨node, span⟩ => do .ok { node := ← elabLValue env node, span }
 
-partial def elabLValue (env : Env) : LValue → Except String LValue
+def elabLValue (env : Env) : LValue → Except String LValue
   | .var name => .ok (.var name)
   | .deref ptr => do
       let ptr' ← elabMLValue env ptr
@@ -185,19 +181,6 @@ partial def elabLValue (env : Env) : LValue → Except String LValue
       .ok (.arrAccess arr' index')
 end
 
-mutual
-partial def lvalueToExpr (lv : LValue) (span : Option SrcSpan) : MarkedExpr :=
-  match lv with
-  | .var name => mkElabExpr (.var name) span
-  | .deref ptr => mkElabExpr (.deref (markedLValueToExpr ptr)) span
-  | .dot struct field => mkElabExpr (.dot (markedLValueToExpr struct) field) span
-  | .arrow structPtr field => mkElabExpr (.arrow (markedLValueToExpr structPtr) field) span
-  | .arrAccess arr index => mkElabExpr (.arrAccess (markedLValueToExpr arr) index) span
-
-partial def markedLValueToExpr (lv : MarkedLValue) : MarkedExpr :=
-  lvalueToExpr lv.node lv.span
-end
-
 def assignOpToBinOp : AssignOp → Option BinOp
   | .assign => none
   | .plusEq => some .plus
@@ -211,8 +194,24 @@ def assignOpToBinOp : AssignOp → Option BinOp
   | .shlEq => some .shl
   | .shrEq => some .shr
 
-partial def elabMStm (env : Env) (tc : TempCounter) (mstm : MarkedStm) : Except String (TempCounter × MarkedStm) := do
-  match mstm.node with
+def elabMAnno (env : Env) (a : MarkedAnno) : Except String MarkedAnno := do
+  match a.node with
+  | .requires precondition =>
+    let precondition' ← elabMExpr env precondition
+    .ok <| mkElabAnno (.requires precondition') a.span
+  | .ensures postcondition =>
+    let postcondition' ← elabMExpr env postcondition
+    .ok <| mkElabAnno (.ensures postcondition') a.span
+  | .asserts e =>
+    let e' ← elabMExpr env e
+    .ok <| mkElabAnno (.asserts e') a.span
+  | .loopInvariant e =>
+    let e' ← elabMExpr env e
+    .ok <| mkElabAnno (.loopInvariant e') a.span
+
+
+def elabMStm (env : Env) (tc : TempCounter) (mstm : MarkedStm) : Except String (TempCounter × MarkedStm) := do
+  match h : mstm.node with
   | .assign lhs val => do
     let lhs' ← elabMLValue env lhs
     let val' ← elabMExpr env val
@@ -222,11 +221,10 @@ partial def elabMStm (env : Env) (tc : TempCounter) (mstm : MarkedStm) : Except 
     let (tc', thenBranch') ← elabMStm env tc thenBranch
     let (tc'', elseBranch') ← elabMStm env tc' elseBranch
     .ok (tc'', mkElabStm (.ifLit test' thenBranch' elseBranch') mstm.span)
-  | .whileLit test body step =>
+  | .whileLit test body =>
     let test' ← elabMExpr env test
     let (tc', body') ← elabMStm env tc body
-    let (tc'', step') ← elabMStm env tc' step
-    .ok (tc'', mkElabStm (.whileLit test' body' step') mstm.span)
+    .ok (tc', mkElabStm (.whileLit test' body') mstm.span)
   | .ret valOpt =>
     match valOpt with
     | some val =>
@@ -255,18 +253,33 @@ partial def elabMStm (env : Env) (tc : TempCounter) (mstm : MarkedStm) : Except 
       let value' ← elabMExpr env value
       .ok (tc, mkElabStm (.asop lhs' op value') mstm.span)
   | .forLit init test update body =>
+    -- `for (init; test; update) body` is `init; while (test) { body update }`,
+    -- where a declaration in `init` scopes over the loop. The parts are
+    -- elaborated in the order the desugared statement would be, and get the
+    -- spans it would get.
     let bodySpan := spanCoverOpt body.span update.span
     let whileSpan := spanCoverOpt test.span bodySpan
     let forSpan := spanCoverOpt init.span whileSpan
-    let bodyWithUpdate := mkElabStm (.seq body update) bodySpan
-    let desugaredWhile := mkElabStm (.whileLit test bodyWithUpdate (mkElabStm .nop none)) whileSpan
-    match init.node with
-    | .declare varName tau init initBody =>
-      let scopedFor := mkElabStm (.declare varName tau init (mkElabStm (.seq initBody desugaredWhile) forSpan)) forSpan
-      elabMStm env tc scopedFor
+    let elabLoop (tc : TempCounter) : Except String (TempCounter × MarkedStm) := do
+      let test' ← elabMExpr env test
+      let (tc, body') ← elabMStm env tc body
+      let (tc, update') ← elabMStm env tc update
+      .ok (tc, mkElabStm (.whileLit test' (mkElabStm (.seq body' update') bodySpan)) whileSpan)
+    match h' : init.node with
+    | .declare varName tau initVal initBody =>
+      if env.contains varName then
+        throw "Variable cannot have the same name as a type"
+      let t ← elabTypeName env tau
+      let initVal' ← initVal.mapM (elabMExpr env)
+      let (tc, initBody') ← elabMStm env tc initBody
+      let (tc, loop) ← elabLoop tc
+      .ok (tc, mkElabStm
+        (.declare varName t initVal' (mkElabStm (.seq initBody' loop) (spanCoverOpt initBody.span whileSpan)))
+        forSpan)
     | _ =>
-      let desugaredFor := mkElabStm (.seq init desugaredWhile) forSpan
-      elabMStm env tc desugaredFor
+      let (tc, init') ← elabMStm env tc init
+      let (tc, loop) ← elabLoop tc
+      .ok (tc, mkElabStm (.seq init' loop) (spanCoverOpt init.span whileSpan))
   | .expr e => do
     let e' ← elabMExpr env e
     .ok (tc, mkElabStm (.expr e') mstm.span)
@@ -285,38 +298,22 @@ partial def elabMStm (env : Env) (tc : TempCounter) (mstm : MarkedStm) : Except 
     let one := mkElabExpr (.intLit 1) mstm.span
     .ok (tc, mkElabStm (.asop lhs' .subEq one) mstm.span)
   | .annotation a => do
-    let a' ←
-      match a.node with
-      | .requires precondition => do
-          let precondition' ← elabMExpr env precondition
-          .ok <| mkElabAnno (.requires precondition') a.span
-      | .ensures postcondition => do
-          let postcondition' ← elabMExpr env postcondition
-          .ok <| mkElabAnno (.ensures postcondition') a.span
-      | .asserts e => do
-          let e' ← elabMExpr env e
-          .ok <| mkElabAnno (.asserts e') a.span
-      | .loopInvariant e => do
-          let e' ← elabMExpr env e
-          .ok <| mkElabAnno (.loopInvariant e') a.span
+    let a' ← elabMAnno env a
     .ok (tc, mkElabStm (.annotation a') mstm.span)
   | .nop =>
     .ok (tc, mstm)
-
-def elabMAnno (env : Env) (a : MarkedAnno) : Except String MarkedAnno := do
-  match a.node with
-  | .requires precondition =>
-    let precondition' ← elabMExpr env precondition
-    .ok <| mkElabAnno (.requires precondition') a.span
-  | .ensures postcondition =>
-    let postcondition' ← elabMExpr env postcondition
-    .ok <| mkElabAnno (.ensures postcondition') a.span
-  | .asserts e =>
-    let e' ← elabMExpr env e
-    .ok <| mkElabAnno (.asserts e') a.span
-  | .loopInvariant e =>
-    let e' ← elabMExpr env e
-    .ok <| mkElabAnno (.loopInvariant e') a.span
+termination_by sizeOf mstm
+decreasing_by
+  all_goals
+    have h1 := MarkedStm.sizeOf_node_lt mstm
+    have h2 := congrArg sizeOf h
+    simp at h2
+    first
+      | omega
+      | (have h3 := MarkedStm.sizeOf_node_lt init
+         have h4 := congrArg sizeOf h'
+         simp at h4
+         omega)
 
 def elabParams (params : List Param) (env : Env) : Except String (List Param) :=
   List.mapM (λ (tau, paramName) => do
@@ -324,17 +321,7 @@ def elabParams (params : List Param) (env : Env) : Except String (List Param) :=
     .ok (tau', paramName))
   params
 
-def tauEq : Tau → Tau → Bool
-  | .int, .int => true
-  | .char, .char => true
-  | .string, .string => true
-  | .bool, .bool => true
-  | .void, .void => true
-  | .typeName lhs, .typeName rhs => lhs == rhs
-  | .struct lhs, .struct rhs => lhs == rhs
-  | .ptr lhs, .ptr rhs => tauEq lhs rhs
-  | .array lhs, .array rhs => tauEq lhs rhs
-  | _, _ => false
+def tauEq (lhs rhs : Tau) : Bool := lhs == rhs
 
 def fnSigEq (retType : Tau) (paramTypes : List Tau) (info : FnInfo) : Bool :=
   tauEq retType info.retType
@@ -362,8 +349,8 @@ def registerFn
         .ok (fenv.insert fname { info with defined := info.defined || defined, external := info.external || external })
 
 mutual
-partial def collectCallsMExpr (mexpr : MarkedExpr) : Std.HashSet String :=
-  match mexpr.node with
+def collectCallsMExpr (mexpr : MarkedExpr) : Std.HashSet String :=
+  match h : mexpr.node with
   | .var _ | .intLit _ | .trueLit | .falseLit | .null | .charLit _ | .stringLit _ | .result | .hastag | .alloc _ => {}
   | .binop _ lhs rhs =>
       (collectCallsMExpr lhs).fold (fun acc fname => acc.insert fname) (collectCallsMExpr rhs)
@@ -374,8 +361,8 @@ partial def collectCallsMExpr (mexpr : MarkedExpr) : Std.HashSet String :=
       let calls := (collectCallsMExpr thenVal).fold (fun acc fname => acc.insert fname) calls
       (collectCallsMExpr elseVal).fold (fun acc fname => acc.insert fname) calls
   | .call fname args =>
-      args.foldl
-        (fun calls arg => (collectCallsMExpr arg).fold (fun acc called => acc.insert called) calls)
+      args.attach.foldl
+        (fun calls ⟨arg, _⟩ => (collectCallsMExpr arg).fold (fun acc called => acc.insert called) calls)
         (({} : Std.HashSet String).insert fname)
   | .length arrayLike =>
       collectCallsMExpr arrayLike
@@ -389,22 +376,52 @@ partial def collectCallsMExpr (mexpr : MarkedExpr) : Std.HashSet String :=
       collectCallsMExpr ptr
   | .arrAccess arr index =>
       (collectCallsMExpr arr).fold (fun acc fname => acc.insert fname) (collectCallsMExpr index)
+termination_by sizeOf mexpr
+decreasing_by
+  all_goals
+    have h1 := MarkedExpr.sizeOf_node_lt mexpr
+    have h2 := congrArg sizeOf h
+    simp at h2
+    first
+      | omega
+      | (have := List.sizeOf_lt_of_mem ‹_ ∈ args›; omega)
+      | (have := MarkedAnno.sizeOf_node_lt a; omega)
 
-partial def collectCallsMLValue (mlv : MarkedLValue) : Std.HashSet String :=
-  match mlv.node with
+def collectCallsMLValue (mlv : MarkedLValue) : Std.HashSet String :=
+  match h : mlv.node with
   | .var _ => {}
   | .deref ptr => collectCallsMLValue ptr
   | .dot struct _ => collectCallsMLValue struct
   | .arrow structPtr _ => collectCallsMLValue structPtr
   | .arrAccess arr index =>
       (collectCallsMLValue arr).fold (fun acc fname => acc.insert fname) (collectCallsMExpr index)
+termination_by sizeOf mlv
+decreasing_by
+  all_goals
+    have h1 := MarkedLValue.sizeOf_node_lt mlv
+    have h2 := congrArg sizeOf h
+    simp at h2
+    first
+      | omega
+      | (have := List.sizeOf_lt_of_mem ‹_ ∈ args›; omega)
+      | (have := MarkedAnno.sizeOf_node_lt a; omega)
 
-partial def collectCallsMAnno (manno : MarkedAnno) : Std.HashSet String :=
-  match manno.node with
+def collectCallsMAnno (manno : MarkedAnno) : Std.HashSet String :=
+  match h : manno.node with
   | .requires e | .ensures e | .asserts e | .loopInvariant e => collectCallsMExpr e
+termination_by sizeOf manno
+decreasing_by
+  all_goals
+    have h1 := MarkedAnno.sizeOf_node_lt manno
+    have h2 := congrArg sizeOf h
+    simp at h2
+    first
+      | omega
+      | (have := List.sizeOf_lt_of_mem ‹_ ∈ args›; omega)
+      | (have := MarkedAnno.sizeOf_node_lt a; omega)
 
-partial def collectCallsMStm (mstm : MarkedStm) : Std.HashSet String :=
-  match mstm.node with
+def collectCallsMStm (mstm : MarkedStm) : Std.HashSet String :=
+  match h : mstm.node with
   | .assert val | .error val | .expr val =>
       collectCallsMExpr val
   | .assign lhs val | .asop lhs _ val =>
@@ -413,10 +430,8 @@ partial def collectCallsMStm (mstm : MarkedStm) : Std.HashSet String :=
       let calls := collectCallsMExpr test
       let calls := (collectCallsMStm thenBranch).fold (fun acc fname => acc.insert fname) calls
       (collectCallsMStm elseBranch).fold (fun acc fname => acc.insert fname) calls
-  | .whileLit test body step =>
-      let calls := collectCallsMExpr test
-      let calls := (collectCallsMStm body).fold (fun acc fname => acc.insert fname) calls
-      (collectCallsMStm step).fold (fun acc fname => acc.insert fname) calls
+  | .whileLit test body =>
+      (collectCallsMStm body).fold (fun acc fname => acc.insert fname) (collectCallsMExpr test)
   | .ret (some val) =>
       collectCallsMExpr val
   | .ret none | .nop =>
@@ -435,6 +450,16 @@ partial def collectCallsMStm (mstm : MarkedStm) : Std.HashSet String :=
       (collectCallsMStm body).fold (fun acc fname => acc.insert fname) calls
   | .annotation a =>
       collectCallsMAnno a
+termination_by sizeOf mstm
+decreasing_by
+  all_goals
+    have h1 := MarkedStm.sizeOf_node_lt mstm
+    have h2 := congrArg sizeOf h
+    simp at h2
+    first
+      | omega
+      | (have := List.sizeOf_lt_of_mem ‹_ ∈ args›; omega)
+      | (have := MarkedAnno.sizeOf_node_lt a; omega)
 end
 
 def collectCallsGDecl : GDecl → Std.HashSet String

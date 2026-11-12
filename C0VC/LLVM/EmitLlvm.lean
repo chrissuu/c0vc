@@ -64,12 +64,12 @@ def emitCalleeName : IR.Callee → String
   | .runtime fname => fname
 
 mutual
-partial def emitFEvals (args : List (IR.Tau × IR.Val)) : String :=
+def emitFEvals (args : List (IR.Tau × IR.Val)) : String :=
   ", ".intercalate (List.map
   (λ (tau, arg) => s!"{emitTau tau} {emitVal arg}") args)
 
 
-partial def emitVal : IR.Val → String
+def emitVal : IR.Val → String
   | .void => ""
   | .var t => s!"%{t.name}"
   | .ptr t => s!"%{t.name}"
@@ -139,8 +139,15 @@ def emitFdefn (fdefn : IR.FunctionDef) : String :=
   ++ "\n"
   ++ "}"
 
+/--
+Parameter types of a function implemented in C. C passes `bool` zero-extended,
+so `i1` parameters need `zeroext`; without it the callee may read garbage in
+the upper bits.
+-/
 def emitParamTaus (taus : List IR.Tau) : String :=
-  ", ".intercalate (taus.map emitTau)
+  ", ".intercalate (taus.map fun
+    | .i1 => "i1 zeroext"
+    | tau => emitTau tau)
 
 def emitRuntimeDecl (fn : Runtime.Fn) : String :=
   s!"declare {emitTau (Runtime.retTau fn)} @{Runtime.name fn}({emitParamTaus (Runtime.argsTau fn)})"

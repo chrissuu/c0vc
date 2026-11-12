@@ -117,28 +117,7 @@ The SrcLoc ptr is updated in these instances: Tabs, Return, etc.
 
 -/
 
-def isHexLitSeed c := c == '0'
-
-def isIntLitSeed c := Char.isDigit c
-
 def isIdentSeed c := Char.isAlpha c || c == '_'
-
-def isStringLitSeed c := c == '\"'
-
-def isCharLitSeed c := c == '\''
-
-def isCommentSeed c := c == '/'
-
-def isContractBuiltinSeed c := c == '\\'
-
-def isSeed c :=
-  isHexLitSeed c
-  || isIntLitSeed c
-  || isIdentSeed c
-  || isStringLitSeed c
-  || isCharLitSeed c
-  || isCommentSeed c
-  || isContractBuiltinSeed c
 
 def isHexDigit (c : Char) : Bool :=
   Char.isDigit c
@@ -146,10 +125,8 @@ def isHexDigit (c : Char) : Bool :=
   || ('A' <= c && c <= 'F')
 
 -- hexadecimal ::= "0"['x' 'X']['0'-'9' 'a'-'f' 'A'-'F']+
-def matchHexLit (s : String.Slice) (sliceLength : Nat) : Option String.Slice :=
-  if sliceLength < 3 then
-    none
-  else if !(s.startsWith "0x" || s.startsWith "0X") then
+def matchHexLit (s : String.Slice) : Option String.Slice :=
+  if !(s.startsWith "0x" || s.startsWith "0X") then
     none
   else
     let digits := (s.drop 2).takeWhile isHexDigit
@@ -160,7 +137,7 @@ def matchHexLit (s : String.Slice) (sliceLength : Nat) : Option String.Slice :=
       some (s.take consumed)
 
 -- integer ::= ("0" | ['1'-'9'](['0'-'9']*))
-def matchIntLit (s : String.Slice) (_ : Nat) : Option String.Slice :=
+def matchIntLit (s : String.Slice) : Option String.Slice :=
   let digits := s.takeWhile Char.isDigit
   if digits.isEmpty then none
   else
@@ -172,7 +149,7 @@ def isIdentChar (c : Char) : Bool :=
   c == '_' || c.isAlphanum
 
 -- ident ::= ['A'-'Z' 'a'-'z' '_']['A'-'Z' 'a'-'z' '0'-'9' '_']*
-def matchIdent (s : String.Slice) (_ : Nat) : Option String.Slice :=
+def matchIdent (s : String.Slice) : Option String.Slice :=
   if s.startsWith Char.isDigit then none
   else
     let identChars := s.takeWhile isIdentChar
@@ -188,27 +165,35 @@ private def stringLitLength : List Char → Nat → Option Nat
   | '"' :: _, n => some (n + 1)
   | _ :: rest, n => stringLitLength rest (n + 1)
 
+/-- Escapes allowed in C0 character and string literals. -/
+def isValidCharEscape (c : Char) : Bool :=
+  "ntvbrfa\\'\"?0".contains c
+
+private def escapesValid : List Char → Bool
+  | [] => true
+  | '\\' :: c :: rest => isValidCharEscape c && escapesValid rest
+  | _ :: rest => escapesValid rest
+
 -- string ::= '"' (char | escape)* '"'
-def matchStringLit (s : String.Slice) (sliceLength : Nat) : Option String.Slice :=
-  if sliceLength < 2 || !s.startsWith "\"" then none
+def matchStringLit (s : String.Slice) : Option String.Slice :=
+  if !s.startsWith "\"" then none
   else
     let body := (s.drop 1).takeWhile (fun c => c != '\n')
-    (stringLitLength body.toString.toList 1).map s.take
-
-def isValidCharEscape (c : Char) : Bool :=
-  c == 'n' || c == 't' || c == 'r' || c == '\\' || c == '\'' || c == '"' || c == '0'
+    match stringLitLength body.toString.toList 1 with
+    | some n =>
+        let lit := s.take n
+        -- The body without its quotes must use only C0 escapes.
+        if escapesValid ((lit.drop 1).dropEnd 1).toString.toList then some lit else none
+    | none => none
 
 def isWhitespace (c : Char) : Bool :=
   c == ' ' || c == '\t' || c == '\r' || c == '\n' || c == '\u000B' || c == '\u000C'
 
-def matchCharLit (s : String.Slice) (sliceLength : Nat) : Option String.Slice :=
-  if sliceLength < 3 then none
-  else if !s.startsWith "'" then none
+def matchCharLit (s : String.Slice) : Option String.Slice :=
+  if !s.startsWith "'" then none
   else
     let body := s.drop 1
     if body.startsWith "\\" then
-      if sliceLength < 4 then none
-      else
         let esc := (body.drop 1).take 1
         let close := (body.drop 2).take 1
         if esc.isEmpty || close.isEmpty then
@@ -227,29 +212,24 @@ def matchCharLit (s : String.Slice) (sliceLength : Nat) : Option String.Slice :=
       else if close.toString != "'" then none
       else some (s.take 3)
 
-partial def nestedBlockCommentLength : List Char → Nat → Nat → Option Nat
-  | [], _, _ => none
-  | '/' :: '*' :: rest, depth, consumed =>
-      nestedBlockCommentLength rest (depth + 1) (consumed + 2)
-  | '*' :: '/' :: rest, depth, consumed =>
-      if depth == 1 then
-        some (consumed + 2)
-      else
-        nestedBlockCommentLength rest (depth - 1) (consumed + 2)
-  | _ :: rest, depth, consumed =>
-      nestedBlockCommentLength rest depth (consumed + 1)
-
-partial def nestedAnnotationBlockLength : List Char → Nat → Nat → Option Nat
-  | [], _, _ => none
-  | '/' :: '*' :: '@' :: rest, depth, consumed =>
-      nestedAnnotationBlockLength rest (depth + 1) (consumed + 3)
-  | '@' :: '*' :: '/' :: rest, depth, consumed =>
-      if depth == 1 then
-        some (consumed + 3)
-      else
-        nestedAnnotationBlockLength rest (depth - 1) (consumed + 3)
-  | _ :: rest, depth, consumed =>
-      nestedAnnotationBlockLength rest depth (consumed + 1)
+/--
+Length of a nested block comment that starts after its opening delimiter, at
+nesting `depth`, given `consumed` characters so far. Scans only the comment,
+so lexing stays linear in the file size.
+-/
+def nestedCommentLength (opening closing : String) (s : String.Slice) (depth consumed : Nat)
+    (fuel : Nat := 2 ^ 63) : Option Nat :=
+  match fuel with
+  | 0 => none
+  | fuel + 1 =>
+  if s.isEmpty then none
+  else if s.startsWith opening then
+    nestedCommentLength opening closing (s.drop opening.length) (depth + 1) (consumed + opening.length) fuel
+  else if s.startsWith closing then
+    if depth == 1 then some (consumed + closing.length)
+    else nestedCommentLength opening closing (s.drop closing.length) (depth - 1) (consumed + closing.length) fuel
+  else
+    nestedCommentLength opening closing (s.drop 1) depth (consumed + 1) fuel
 
 def startsWithWord (s : String.Slice) (word : String) : Bool :=
   s.startsWith word &&
@@ -267,7 +247,7 @@ def startsWithAnnotationKeyword (s : String.Slice) : Bool :=
 
 /-- Matches comments:
 `// ...` until first `\n`, and nested `/* ... */` block comments. -/
-def matchComment (includeAnnotations : Bool) (s : String.Slice) (_ : Nat) : Option String.Slice :=
+def matchComment (includeAnnotations : Bool) (s : String.Slice) : Option String.Slice :=
   if includeAnnotations && s.startsWith "//@" && startsWithAnnotationKeyword (s.drop 3) then
     none
   else if includeAnnotations && s.startsWith "/*@" && startsWithAnnotationKeyword (s.drop 3) then
@@ -278,12 +258,12 @@ def matchComment (includeAnnotations : Bool) (s : String.Slice) (_ : Nat) : Opti
     let consumed := 2 + commentBody.toString.length
     some (s.take consumed)
   else if s.startsWith "/*@" then
-    match nestedAnnotationBlockLength (s.drop 3).toString.toList 1 3 with
+    match nestedCommentLength "/*@" "@*/" (s.drop 3) 1 3 with
     | some consumed =>
       some (s.take consumed)
     | none => none
   else if s.startsWith "/*" then
-    match nestedBlockCommentLength (s.drop 2).toString.toList 1 2 with
+    match nestedCommentLength "/*" "*/" (s.drop 2) 1 2 with
     | some consumed =>
       some (s.take consumed)
     | none => none
@@ -301,16 +281,14 @@ def staticTokenLexemes : List String :=
     "=", "+", "-", "*", "/", "%", "<", ">", "&", "^", "|", "!", "~", "#", "."
   ]
 
-def matchStaticToken (s : String.Slice) (_ : Nat) : Option String.Slice :=
+def matchStaticToken (s : String.Slice) : Option String.Slice :=
   (staticTokenLexemes.find? (fun lex => s.startsWith lex)).map (fun lex => s.take lex.length)
 
-def getMatchesAndMaximalMatch (includeAnnotations : Bool) (s : String.Slice) : List String.Slice × Option String.Slice :=
-  let len := s.positions.length
-  let patternMatches := [matchHexLit, matchIntLit, matchIdent, matchStringLit, matchCharLit, matchComment includeAnnotations, matchStaticToken]
-  |> List.map (λ fn => fn s len)
-  |> List.filterMap id
-  let maximalMatch := List.maxOn? (λ x => x.positions.length) patternMatches
-  (patternMatches, maximalMatch)
+/-- The longest token or comment at the start of `s`. -/
+def maximalMatch (includeAnnotations : Bool) (s : String.Slice) : Option String.Slice :=
+  [matchHexLit, matchIntLit, matchIdent, matchStringLit, matchCharLit, matchComment includeAnnotations, matchStaticToken]
+    |>.filterMap (· s)
+    |>.maxOn? (·.positions.length)
 
 def decodeEscapedChar (c : Char) : Char :=
   match c with
@@ -320,6 +298,10 @@ def decodeEscapedChar (c : Char) : Char :=
   | '\\' => '\\'
   | '\'' => '\''
   | '"' => '"'
+  | 'v' => '\u000B'
+  | 'b' => '\u0008'
+  | 'f' => '\u000C'
+  | 'a' => '\u0007'
   | '0' => '\u0000'
   | x => x
 
@@ -327,6 +309,9 @@ def decodeEscapes : List Char → String
   | [] => ""
   | '\\' :: c :: rest => (decodeEscapedChar c).toString ++ decodeEscapes rest
   | c :: rest => c.toString ++ decodeEscapes rest
+
+/-- Columns a tab advances, for source locations. -/
+def tabWidth : Nat := 4
 
 -- Helper for tracking SrcLoc.
 def advanceLocByChars : Nat → Nat → List Char → SrcLoc
@@ -337,7 +322,7 @@ def advanceLocByChars : Nat → Nat → List Char → SrcLoc
   | line, _, '\r' :: rest => advanceLocByChars (line + 1) 1 rest
   | line, _, '\n' :: rest => advanceLocByChars (line + 1) 1 rest
 
-  -- see SrcSpan for tabWidth variable. TODO: move tabWidth somewhere more visible?
+  -- A tab advances the column by `tabWidth`.
   | line, col, '\t' :: rest => advanceLocByChars line (col + tabWidth) rest
   | line, col, _ :: rest => advanceLocByChars line (col + 1) rest
 
@@ -408,11 +393,13 @@ def finishTypedefTokens (typedefs : Std.HashSet String) (tokensRev : List Token)
       | _ => (tokens', typedefs)
   | none => (tokens', typedefs)
 
-partial def classifyTypedefsWith (initialTypedefs : List String) (tokens : List Token) : List Token :=
-  let rec go (typedefs : Std.HashSet String) (acc : List Token) (rest : List Token) : List Token :=
-    match rest with
-    | [] => acc.reverse
-    | tok :: toks =>
+def classifyTypedefsWith (initialTypedefs : List String) (tokens : List Token) : List Token :=
+  -- Each step consumes at least one token, so `tokens.length + 1` steps suffice.
+  let rec go (fuel : Nat) (typedefs : Std.HashSet String) (acc : List Token) (rest : List Token) : List Token :=
+    match fuel, rest with
+    | _, [] => acc.reverse
+    | 0, _ => acc.reverse ++ rest
+    | fuel + 1, tok :: toks =>
         match tok.kind with
         | .kwTypedef =>
             let rec collect (bufRev : List Token) : List Token → List Token × List Token
@@ -424,12 +411,12 @@ partial def classifyTypedefsWith (initialTypedefs : List String) (tokens : List 
                     collect (t :: bufRev) ts
             let (typedefRev, rest') := collect [tok] toks
             let (typedefTokens, typedefs') := finishTypedefTokens typedefs typedefRev
-            go typedefs' (typedefTokens.reverse ++ acc) rest'
+            go fuel typedefs' (typedefTokens.reverse ++ acc) rest'
         | _ =>
-            go typedefs (classifyTypedefToken typedefs tok :: acc) toks
-  go (Std.HashSet.ofList initialTypedefs) [] tokens
+            go fuel typedefs (classifyTypedefToken typedefs tok :: acc) toks
+  go (tokens.length + 1) (Std.HashSet.ofList initialTypedefs) [] tokens
 
-partial def classifyTypedefs (tokens : List Token) : List Token :=
+def classifyTypedefs (tokens : List Token) : List Token :=
   classifyTypedefsWith [] tokens
 
 /-- Where the lexer is relative to annotations; `@` is whitespace inside one. -/
@@ -438,9 +425,13 @@ inductive AnnoState where
   | line
   | block
 
-partial def munchRaw (includeAnnotations : Bool) (fileName : String) (body : String) : Except String (List Token) :=
-  let rec go (s : String.Slice) (line col : Nat) (acc : List Token) (anno : AnnoState := .outside) :
+def munchRaw (includeAnnotations : Bool) (fileName : String) (body : String) : Except String (List Token) :=
+  -- Each step consumes at least one character, so `body.length + 1` steps suffice.
+  let rec go (fuel : Nat) (s : String.Slice) (line col : Nat) (acc : List Token) (anno : AnnoState := .outside) :
       Except String (List Token) :=
+    match fuel with
+    | 0 => .error s!"internal error: lexer made no progress at {fileName}:{line}:{col}"
+    | fuel + 1 =>
     if s.isEmpty then
       let loc := SrcLoc.mk line col
       let eof : Token := { kind := .eof, span := SrcSpan.mk loc loc fileName }
@@ -455,17 +446,20 @@ partial def munchRaw (includeAnnotations : Bool) (fileName : String) (body : Str
         let anno := match anno with
           | .line => if ws.toString.contains '\n' then .outside else .line
           | other => other
-        go (s.drop ws.toString.length) nextLoc.line nextLoc.col acc anno
+        go fuel (s.drop ws.toString.length) nextLoc.line nextLoc.col acc anno
       else if inAnno && s.startsWith "@" && !s.startsWith "@*/" then
         -- "In annotations, the @ character is treated as whitespace." (C0 reference)
-        go (s.drop 1) line (col + 1) acc anno
-      else if s.startsWith "/*" && !s.startsWith "/*@" && (matchComment includeAnnotations s s.positions.length).isNone then
+        go fuel (s.drop 1) line (col + 1) acc anno
+      else if s.startsWith "/*" && !s.startsWith "/*@" && (matchComment includeAnnotations s).isNone then
         .error s!"lexical error at {fileName}:{line}:{col}: unterminated block comment"
       else
-        let (_, maximalMatch?) := getMatchesAndMaximalMatch includeAnnotations s
-        match maximalMatch? with
+        match maximalMatch includeAnnotations s with
         | none =>
           match s.front? with
+          | some '"' =>
+            .error s!"lexical error at {fileName}:{line}:{col}: string literal is unterminated or has an invalid escape"
+          | some '\'' =>
+            .error s!"lexical error at {fileName}:{line}:{col}: malformed character literal"
           | some char =>
             .error s!"lexical error at {fileName}:{line}:{col}: unexpected character '{char}'"
           | none =>
@@ -473,8 +467,8 @@ partial def munchRaw (includeAnnotations : Bool) (fileName : String) (body : Str
         | some matched =>
           let consumed := matched.toString.length
           let nextLoc := advanceLocBySlice line col matched
-          if (matchComment includeAnnotations s s.positions.length).isSome then
-            go (s.drop consumed) nextLoc.line nextLoc.col acc anno
+          if (matchComment includeAnnotations s).isSome then
+            go fuel (s.drop consumed) nextLoc.line nextLoc.col acc anno
           else
             match toTokenKind? matched with
             | some kind =>
@@ -487,10 +481,10 @@ partial def munchRaw (includeAnnotations : Bool) (fileName : String) (body : Str
                 | .openMultilineAnnotation => .block
                 | .closeMultilineAnnotation => .outside
                 | _ => anno
-              go (s.drop consumed) nextLoc.line nextLoc.col (tok :: acc) anno
+              go fuel (s.drop consumed) nextLoc.line nextLoc.col (tok :: acc) anno
             | none =>
               .error s!"lexical error at {fileName}:{line}:{col}: malformed token `{matched.toString}`"
-  go body.toSlice 1 1 []
+  go (body.length + 1) body.toSlice 1 1 []
 
 def munch (fileName : String) (body : String) : Except String (List Token) := do
   let tokens ← munchRaw true fileName body

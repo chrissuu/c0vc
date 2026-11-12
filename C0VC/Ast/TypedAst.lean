@@ -1,3 +1,4 @@
+import C0VC.Utils.Literal
 import C0VC.Ast.ElabbedAst
 
 namespace C0VC.TypedAst
@@ -84,6 +85,127 @@ structure FunctionDef where
 
 abbrev Program := List FunctionDef
 
+instance : Inhabited TypedExpr := ⟨{ node := .intLit 0, tau := .int }⟩
+instance : Inhabited TypedLValue := ⟨{ node := .var "", tau := .int }⟩
+instance : Inhabited Stm := ⟨.nop⟩
+
+theorem TypedExpr.sizeOf_node_lt (e : TypedExpr) : sizeOf e.node < sizeOf e := by
+  cases e; simp; omega
+
+theorem TypedLValue.sizeOf_node_lt (e : TypedLValue) : sizeOf e.node < sizeOf e := by
+  cases e; simp; omega
+
+/-! ## Traversals shared by the typechecker and the backends -/
+
+mutual
+/-- The expression reading the location an lvalue denotes. -/
+def TypedLValue.toExpr : TypedLValue → TypedExpr
+  | ⟨node, tau, span⟩ => { node := node.toExprNode, tau, span }
+
+def LValue.toExprNode : LValue → Expr
+  | .var name => .var name
+  | .deref ptr => .deref ptr.toExpr
+  | .dot struct field => .dot struct.toExpr field
+  | .arrow structPtr field => .arrow structPtr.toExpr field
+  | .arrAccess arr index => .arrAccess arr.toExpr index
+end
+
+/-- The immediate subexpressions of an expression. -/
+def TypedExpr.children (e : TypedExpr) : List TypedExpr :=
+  match e.node with
+  | .binop _ l r => [l, r]
+  | .ternary c t f => [c, t, f]
+  | .call _ args => args
+  | .length a | .deref a | .dot a _ | .arrow a _ => [a]
+  | .allocArray _ n => [n]
+  | .arrAccess a i => [a, i]
+  | _ => []
+
+mutual
+/-- The expression and all of its subexpressions, outermost first. -/
+def TypedExpr.subexprs : TypedExpr → List TypedExpr
+  | e@⟨node, _, _⟩ => e :: node.childSubexprs
+
+/-- All subexpressions of a node's children. -/
+def Expr.childSubexprs : Expr → List TypedExpr
+  | .binop _ l r => l.subexprs ++ r.subexprs
+  | .ternary c t f => c.subexprs ++ t.subexprs ++ f.subexprs
+  | .call _ args => TypedExpr.subexprsOfList args
+  | .length a | .deref a | .dot a _ | .arrow a _ => a.subexprs
+  | .allocArray _ n => n.subexprs
+  | .arrAccess a i => a.subexprs ++ i.subexprs
+  | _ => []
+
+def TypedExpr.subexprsOfList : List TypedExpr → List TypedExpr
+  | [] => []
+  | e :: es => e.subexprs ++ TypedExpr.subexprsOfList es
+end
+
+/-- Whether `p` holds for the expression or any of its subexpressions. -/
+def TypedExpr.any (p : TypedExpr → Bool) (e : TypedExpr) : Bool :=
+  e.subexprs.any p
+
+/-- Variables an expression reads. -/
+def TypedExpr.vars (e : TypedExpr) : List String :=
+  e.subexprs.filterMap fun sub => match sub.node with
+    | .var name => some name
+    | _ => none
+
+/-- Functions an expression calls. -/
+def TypedExpr.callees (e : TypedExpr) : List String :=
+  e.subexprs.filterMap fun sub => match sub.node with
+    | .call fname _ => some fname
+    | _ => none
+
+def Anno.expr : Anno → TypedExpr
+  | .requires e | .ensures e | .asserts e | .loopInvariant e => e
+
+/-- Local variables a statement assigns to directly. -/
+def Stm.assignedVars : Stm → List String
+  | .assign lhs _ =>
+      match lhs.node with
+      | .var name => [name]
+      | _ => []
+  | .ifLit _ thenBranch elseBranch => thenBranch.assignedVars ++ elseBranch.assignedVars
+  | .whileLit _ body => body.assignedVars
+  | .seq first rest => first.assignedVars ++ rest.assignedVars
+  | .declare _ _ _ body => body.assignedVars
+  | _ => []
+
+/--
+Split a loop body into the loop invariants that lead it and the rest. C0
+writes invariants between the loop header and the body, and the parser keeps
+them as the body's leading annotation statements.
+-/
+def Stm.peelInvariants : Stm → List TypedExpr × Stm
+  | .annotation (.loopInvariant inv) => ([inv], .nop)
+  | .seq first rest =>
+      let (invs, first') := first.peelInvariants
+      match first' with
+      | .nop =>
+          let (moreInvs, rest') := rest.peelInvariants
+          (invs ++ moreInvs, rest')
+      | _ => (invs, .seq first' rest)
+  | stm => ([], stm)
+
+theorem Stm.sizeOf_peelInvariants_le (s : Stm) : sizeOf s.peelInvariants.2 ≤ sizeOf s := by
+  fun_induction Stm.peelInvariants s <;> simp_all <;> omega
+
+/-- Every expression a statement evaluates, including annotations and nested statements. -/
+def Stm.exprs : Stm → List TypedExpr
+  | .assign lhs val =>
+      (match lhs.node with
+        | .var _ => []
+        | _ => [lhs.toExpr]) ++ [val]
+  | .ifLit c t f => [c] ++ t.exprs ++ f.exprs
+  | .whileLit c body => [c] ++ body.exprs
+  | .ret v => v.toList
+  | .seq a b => a.exprs ++ b.exprs
+  | .declare _ _ init body => init.toList ++ body.exprs
+  | .expr e | .assert e | .error e => [e]
+  | .annotation a => [a.expr]
+  | .nop => []
+
 namespace Print
 
 def ppBinOp : BinOp → String :=
@@ -101,20 +223,20 @@ private def spaces (n : Nat) : String :=
   String.ofList (List.replicate (n * 2) ' ')
 
 mutual
-partial def ppExpr : Expr → String
+def ppExpr : Expr → String
   | .var id => id
   | .intLit n => toString n
   | .trueLit => "true"
   | .falseLit => "false"
   | .null => "NULL"
-  | .stringLit s => s
-  | .charLit c => toString c
+  | .stringLit s => C0VC.Utils.Literal.showString s
+  | .charLit c => C0VC.Utils.Literal.showChar c
   | .binop op lhs rhs =>
       s!"({ppTypedExpr lhs} {ppBinOp op} {ppTypedExpr rhs})"
   | .ternary test thenBranch elseBranch =>
       s!"({ppTypedExpr test} ? {ppTypedExpr thenBranch} : {ppTypedExpr elseBranch})"
   | .call fname args =>
-      let argsStr := String.intercalate ", " (args.map ppTypedExpr)
+      let argsStr := String.intercalate ", " (ppTypedExprList args)
       s!"{fname}({argsStr})"
   | .length arrayLike => s!"\\length ({ppTypedExpr arrayLike})"
   | .result => "\\result"
@@ -126,20 +248,26 @@ partial def ppExpr : Expr → String
   | .deref ptr => s!"*({ppTypedExpr ptr})"
   | .arrAccess arr index => s!"{ppTypedExpr arr}[{ppTypedExpr index}]"
 
-partial def ppTypedExpr (e : TypedExpr) : String :=
-  s!"{ppExpr e.node}:{ppTau e.tau}"
+def ppTypedExpr : TypedExpr → String
+  | e@{ node, .. } =>
+    s!"{ppExpr node}:{ppTau e.tau}"
+
+def ppTypedExprList : List TypedExpr → List String
+  | [] => []
+  | x :: xs => ppTypedExpr x :: ppTypedExprList xs
 end
 
 mutual
-partial def ppLValue : LValue → String
+def ppLValue : LValue → String
   | .var id => id
   | .deref ptr => s!"*({ppTypedLValue ptr})"
   | .dot struct field => s!"{ppTypedLValue struct}.{field}"
   | .arrow structPtr field => s!"{ppTypedLValue structPtr}->{field}"
   | .arrAccess arr index => s!"{ppTypedLValue arr}[{ppTypedExpr index}]"
 
-partial def ppTypedLValue (lv : TypedLValue) : String :=
-  s!"{ppLValue lv.node}:{ppTau lv.tau}"
+def ppTypedLValue : TypedLValue → String
+  | lv@{ node, .. } =>
+    s!"{ppLValue node}:{ppTau lv.tau}"
 end
 
 mutual
@@ -151,7 +279,7 @@ def ppAnno : Anno → String
 end
 
 mutual
-partial def ppStm : Stm → String
+def ppStm : Stm → String
   | .assign lhs e =>
       s!"{ppTypedLValue lhs} = {ppTypedExpr e};"
   | .ret valOpt =>
@@ -213,14 +341,14 @@ def ppProgram (program : Program) : String :=
   String.intercalate "\n\n" (program.map ppFunctionDef)
 
 mutual
-partial def ppExprRaw (indentLevel : Nat) : Expr → String
+def ppExprRaw (indentLevel : Nat) : Expr → String
   | .var id => s!"{spaces indentLevel}Var({id})"
   | .intLit n => s!"{spaces indentLevel}IntLit({n})"
   | .trueLit => s!"{spaces indentLevel}TrueLit"
   | .falseLit => s!"{spaces indentLevel}FalseLit"
   | .null => s!"{spaces indentLevel}Null"
-  | .stringLit s => s!"{spaces indentLevel}StringLit({s})"
-  | .charLit c => s!"{spaces indentLevel}CharLit({c})"
+  | .stringLit s => s!"{spaces indentLevel}StringLit({C0VC.Utils.Literal.showString s})"
+  | .charLit c => s!"{spaces indentLevel}CharLit({C0VC.Utils.Literal.showChar c})"
   | .binop op lhs rhs =>
       s!"{spaces indentLevel}Binop({ppBinOp op},\n{ppTypedExprRaw (indentLevel + 1) lhs},\n{ppTypedExprRaw (indentLevel + 1) rhs}\n{spaces indentLevel})"
   | .ternary test thenBranch elseBranch =>
@@ -245,8 +373,9 @@ partial def ppExprRaw (indentLevel : Nat) : Expr → String
   | .arrAccess arr index =>
       s!"{spaces indentLevel}ArrAccess(\n{ppTypedExprRaw (indentLevel + 1) arr},\n{ppTypedExprRaw (indentLevel + 1) index}\n{spaces indentLevel})"
 
-partial def ppTypedExprRaw (indentLevel : Nat) (e : TypedExpr) : String :=
-  s!"{spaces indentLevel}TypedExpr({ppTau e.tau},\n{ppExprRaw (indentLevel + 1) e.node}\n{spaces indentLevel})"
+def ppTypedExprRaw (indentLevel : Nat) : TypedExpr → String
+  | e@{ node, .. } =>
+    s!"{spaces indentLevel}TypedExpr({ppTau e.tau},\n{ppExprRaw (indentLevel + 1) node}\n{spaces indentLevel})"
 end
 
 def ppAnnoRaw (indentLevel : Nat) : Anno → String
@@ -259,7 +388,7 @@ def ppAnnoRaw (indentLevel : Nat) : Anno → String
   | .loopInvariant e =>
       s!"{spaces indentLevel}LoopInvariant(\n{ppTypedExprRaw (indentLevel + 1) e}\n{spaces indentLevel})"
 
-partial def ppStmRaw (indentLevel : Nat) : Stm → String
+def ppStmRaw (indentLevel : Nat) : Stm → String
   | .assign lhs e =>
       s!"{spaces indentLevel}Assign({ppTypedLValue lhs},\n{ppTypedExprRaw (indentLevel + 1) e}\n{spaces indentLevel})"
   | .ret valOpt =>

@@ -11,6 +11,22 @@
 
 ## WORKLOG
 ---
+10/26: Audit and totality
+    - LLVM: fixed double evaluation of assignment targets, allocas in loops
+      (stack growth), allocation evaluation order, and the bool ABI of the
+      runtime; added -d/--dyn-check.
+    - Frontend: !! / ~~ are typechecked, lexing is linear, syntax errors are
+      reported where they occur, \result / \hastag only where allowed, all
+      C0 escapes.
+    - Removed dead code and shared traversals across passes.
+    - Every definition except the recursive-descent parser is total:
+      structural recursion where possible, well-founded recursion on sizeOf
+      with node-size lemmas otherwise, and fuel only for searches whose
+      bound is a property of the input (typedef chains, struct nesting).
+    - TODO: StateT for LLVM Trans; i8 chars at the C boundary; a total
+      parser; deep inputs (e.g. 10k-long typedef chains) overflow the stack.
+
+---
 10/23: Per-field framing
     - One heap map per struct leaf field and per array element type, all
       indexed by (object, element). modifies and loop havocs are per field.

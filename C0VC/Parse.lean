@@ -463,7 +463,7 @@ partial def parseArgs : P (List MarkedExpr) := do
   | none => pure []
   | some first =>
       let restRev ← Parser.foldl (fun acc p => p :: acc) [] do
-        let _ ← expectKindTokMsg (only .comma) "expected ',' between parameters"
+        let _ ← expectKindTokMsg (only .comma) "expected ',' between arguments"
         parseExpr
       pure (first :: restRev.reverse)
 
@@ -552,7 +552,7 @@ def parseDecr : P MarkedStm := do
   -- this *x-- (and its variations) is slightly ambiguous due to binding, so we reject this form
   if lhs.startsWithBareDeref then
     throwUnexpectedWithMessage none "'*x--' is not valid syntax; write '(*x)--' if the dereference is the lvalue"
-  let decrTok ← expectKindTokMsg (only .decr) "expected '++' after identifier"
+  let decrTok ← expectKindTokMsg (only .decr) "expected '--' after identifier"
   let node :=
     .decr lhs.lvalue
   pure { node := node
@@ -622,12 +622,6 @@ def parseSimpleStm : P MarkedStm := do
     | none => some semiTok.span
   pure { node := s.node, span := span }
 
-def seqOf (stms : List MarkedStm) : MarkedStm :=
-  match stms with
-  | [] => { node := .nop, span := none }
-  | s :: rest =>
-    rest.foldl (fun acc nxt => { node := .seq acc nxt, span := none }) s
-
 def foldStms (stms : List MarkedStm) (span : Option SrcSpan := none) : MarkedStm :=
   match stms with
   | [] => { node := .nop, span := span }
@@ -685,12 +679,24 @@ partial def parseSingleAnnotation : P MarkedAnno :=
 
   parseLineAnnotation <|> parseMultilineAnnotation
 
+/--
+Parse statements up to the closing `}` of a block. A statement that fails to
+parse reports its own error, instead of the loop backtracking over it and
+reporting a missing `}`.
+-/
+partial def parseStmsUntilRBrace (acc : List MarkedStm := []) : P (List MarkedStm) := do
+  let st ← Parser.getStream
+  let kind? : Option Lexer.TokenKind := st.input.head?.map (·.kind)
+  match kind? with
+  | some .rBrace | some .eof | none => pure acc.reverse
+  | some _ => parseStmsUntilRBrace ((← parseStm) :: acc)
+
 partial def parseBlockStm : P MarkedStm := do
   let lTok ← expectKindTokMsg (only .lBrace) "expected '{'"
-  let bodyRev ← Parser.foldl (fun acc stm => stm :: acc) [] parseStm
+  let body ← parseStmsUntilRBrace
   let rTok ← expectKindTokMsg (only .rBrace) "expected '}'"
   let span := some (spanFromTokenBounds lTok rTok)
-  let body := foldStms bodyRev.reverse span
+  let body := foldStms body span
   pure { node := .seq { node := .nop, span := span } body, span := span }
 
 partial def parseIfStm : P MarkedStm := do
@@ -723,7 +729,7 @@ partial def parseWhileStm : P MarkedStm := do
   let cond ← parseExpr
   let _ ← expectKindTokMsg (only .rParen) "expected ')' after while condition"
   let body ← parseLoopBody
-  pure { node := .whileLit cond body { node := .nop, span := none }, span := some whileTok.span }
+  pure { node := .whileLit cond body, span := some whileTok.span }
 
 partial def parseForStm : P MarkedStm := do
   let forTok ← expectKindTokMsg (only .kwFor) "expected 'for'"
@@ -759,21 +765,24 @@ partial def parseErrorStm : P MarkedStm := do
   let semiTok ← expectKindTokMsg (only .semicolon) "expected ';' after error statement"
   pure { node := .error e, span := some (spanFromTokenBounds kwTok semiTok) }
 
-partial def parseNonSimpleStm : P MarkedStm :=
-  withErrorMessage "while parsing statement" <|
-    (parseSimpleStm
-    <|> parseIfStm
-    <|> parseWhileStm
-    <|> parseForStm
-    <|> parseReturnStm
-    <|> parseBlockStm
-    <|> parseAssertStm
-    <|> parseAnnotationStm
-    <|> parseErrorStm)
-
-partial def parseStm : P MarkedStm :=
-  withErrorMessage "while parsing statement" <|
-    (parseNonSimpleStm)
+/--
+A statement, chosen by its first token. Committing to one alternative means a
+syntax error is reported by the statement it occurs in, at the token where it
+occurs.
+-/
+partial def parseStm : P MarkedStm := do
+  let st ← Parser.getStream
+  let kind? : Option Lexer.TokenKind := st.input.head?.map (·.kind)
+  match kind? with
+  | some .kwIf => parseIfStm
+  | some .kwWhile => parseWhileStm
+  | some .kwFor => parseForStm
+  | some .kwReturn => parseReturnStm
+  | some .lBrace => parseBlockStm
+  | some .kwAssert => parseAssertStm
+  | some .kwError => parseErrorStm
+  | some .annotation | some .openMultilineAnnotation => parseAnnotationStm
+  | _ => parseSimpleStm
 end
 
 def parseTypedef : P GDecl := do
@@ -818,55 +827,35 @@ def parseParams : P (List Param) := do
         parseParam
       pure (first :: restRev.reverse)
 
-def parseFdecl : P GDecl := do
-  let annosRev ← Parser.foldl (fun acc anno => anno :: acc) [] parseSingleAnnotation
-  let prefixAnnotations := annosRev.reverse
+/-- A function declaration or definition; the shared header is parsed once. -/
+def parseFunction : P GDecl := do
+  let prefixAnnosRev ← Parser.foldl (fun acc anno => anno :: acc) [] parseSingleAnnotation
   let tau ← parseTau
   let fname ← parseIdent
-  let _ ← expectKindTokMsg (only .lParen) "expected '(' in function declaration"
-  let paramsOpt ← option? parseParams
-  let params := paramsOpt.getD []
-  let _ ← expectKindTokMsg (only .rParen) "expected ')' in function declaration"
+  let _ ← expectKindTokMsg (only .lParen) "expected '(' after the function name"
+  let params := (← option? parseParams).getD []
+  let _ ← expectKindTokMsg (only .rParen) "expected ')' after the function parameters"
   let suffixAnnosRev ← Parser.foldl (fun acc anno => anno :: acc) [] parseSingleAnnotation
-  let annotations := prefixAnnotations ++ suffixAnnosRev.reverse
-  let _ ← expectKindTokMsg (only .semicolon) "expected ';' after function declaration"
-  pure (.fdecl tau fname params annotations)
-
-def parseFdefn : P GDecl := do
-  let annosRevOpt ← option? (Parser.foldl (fun acc anno => anno :: acc) [] parseSingleAnnotation)
-  let annosRev := annosRevOpt.getD []
-  let prefixAnnotations := annosRev.reverse
-  let tau ← parseTau
-  let fname ← parseIdent
-  let _ ← expectKindTokMsg (only .lParen) "expected '(' in function definition"
-  let paramsOpt ← option? parseParams
-  let params := paramsOpt.getD []
-  let _ ← expectKindTokMsg (only .rParen) "expected ')' in function definition"
-  let suffixAnnosRev ← Parser.foldl (fun acc anno => anno :: acc) [] parseSingleAnnotation
-  let annotations := prefixAnnotations ++ suffixAnnosRev.reverse
-  let _ ← expectKindTokMsg (only .lBrace) "expected '{' to start function body"
-  let stms ← Parser.foldl (fun acc stm => stm :: acc) [] parseStm
-  let _ ← expectKindTokMsg (only .rBrace) "expected '}' to close function body"
-  pure (.fdefn tau fname params [foldStms (List.reverse stms)] annotations)
+  let annotations := prefixAnnosRev.reverse ++ suffixAnnosRev.reverse
+  let declaration := do
+    let _ ← expectKindTok (only .semicolon)
+    pure (GDecl.fdecl tau fname params annotations)
+  let definition := do
+    let _ ← expectKindTokMsg (only .lBrace) "expected ';' or '{' after the function signature"
+    let stms ← parseStmsUntilRBrace
+    let _ ← expectKindTokMsg (only .rBrace) "expected '}' to close the function body"
+    pure (GDecl.fdefn tau fname params [foldStms stms] annotations)
+  declaration <|> definition
 
 def parseGdecl : P GDecl :=
   withErrorMessage "while parsing global declaration" <|
-    (parseTypedef <|> parseStructDecl <|> parseFdefn <|> parseFdecl)
+    (parseTypedef <|> parseStructDecl <|> parseFunction)
 
 def runParser {a : Type} (p : P a) (tokens : List Tok) : Except String a :=
   -- Accept optional lexer-emitted EOF token, then require end of token stream.
   match Parser.run (p <* optional eofTok <* endOfInput) (Parser.Stream.mkOfList tokens) with
   | .ok _ x => .ok x
   | .error _ err => .error s!"parse error: {err}"
-
-def parseExprFromTokens (tokens : List Tok) : Except String MarkedExpr :=
-  runParser parseExpr tokens
-
-def parseStmFromTokens (tokens : List Tok) : Except String MarkedStm :=
-  runParser parseStm tokens
-
-def parseGdeclFromTokens (tokens : List Tok) : Except String GDecl :=
-  runParser parseGdecl tokens
 
 private def streamLocation (s : TokStream) : String :=
   match s.input.head? with
