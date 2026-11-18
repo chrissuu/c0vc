@@ -1,8 +1,5 @@
 /-
 AST Core Definitions
-
-Author(s):
-  ~ Chris Su <chrjs@cmu.edu>
 -/
 
 import C0VC.Utils.Literal

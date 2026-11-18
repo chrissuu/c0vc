@@ -1,0 +1,15 @@
+// args: -l header_lib.h0 --timeout=2
+// A header function may write any memory and return anything, so the first
+// two assertions cannot be proved. Array lengths never change, though.
+int main() {
+  int* p = alloc(int);
+  poke(p);
+  //@assert *p == 0;
+  int a = getv();
+  int b = getv();
+  //@assert a == b;
+  int[] A = alloc_array(int, 3);
+  poke(p);
+  //@assert \length(A) == 3;
+  return 0;
+}

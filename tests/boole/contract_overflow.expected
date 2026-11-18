@@ -1,0 +1,2 @@
+contract_overflow.c0:6:12: error: arithmetic may overflow [overflow_L6C12]
+contract_overflow.c0: 1 of 2 proof obligations verified

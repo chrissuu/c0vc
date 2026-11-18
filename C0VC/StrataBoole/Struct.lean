@@ -10,9 +10,6 @@ Boole has no struct values, so a C0 struct is laid out as a run of flattened
 slots inside the object that stores it. Every scalar leaf field gets one slot;
 nested value structs are flattened recursively. Fields of different types share
 the slot numbering but live in different typed heaps.
-
-Author(s):
-  ~ Chris Su <chrjs@cmu.edu>
 -/
 
 abbrev SEnv := Std.HashMap String (List TypedAst.Field)

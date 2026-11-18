@@ -1,0 +1,2 @@
+void poke(int* p);
+int getv();

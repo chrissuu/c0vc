@@ -1,8 +1,5 @@
 /-
 Lexer
-
-Author(s):
-  ~ Chris Su <chrjs@cmu.edu>
 -/
 import Std
 import C0VC.Token

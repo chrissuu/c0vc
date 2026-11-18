@@ -1,0 +1,2 @@
+search_wraparound.c0:23:13: error: //@assert may fail (not proven: solver returned unknown) [assert_L23C13]
+search_wraparound.c0: 7 of 8 proof obligations verified

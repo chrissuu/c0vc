@@ -1,0 +1,21 @@
+
+
+Obligation assert_L7C13: Solver Timeout! stderr:
+solver stdout: timeout
+
+
+
+
+Obligation assert_L10C13: Solver Timeout! stderr:
+solver stdout: timeout
+
+
+header_effects.c0:7:13: error: solver error on assert_L7C13: Solver Timeout! stderr:
+solver stdout: timeout
+
+
+header_effects.c0:10:13: error: solver error on assert_L10C13: Solver Timeout! stderr:
+solver stdout: timeout
+
+
+header_effects.c0: 3 of 5 proof obligations verified

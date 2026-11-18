@@ -1,8 +1,5 @@
 /-
 Tree Representation
-
-Author(s):
-  ~ Chris Su <chrjs@cmu.edu>
 -/
 import C0VC.Utils.Temp
 import C0VC.Utils.Label

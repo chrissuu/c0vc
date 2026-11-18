@@ -84,12 +84,17 @@ checks inside a contract, such as the bounds check in `//@requires A[0] > 0`,
 become extra clauses before it. Contracts on prototypes and header declarations
 are merged into the function's contract, with the prototype's parameter names
 renamed to the definition's. A header function's `@ensures` is trusted (it is a
-free `ensures`), since there is no body to check it against. Allocation and
+free `ensures`), since there is no body to check it against. Otherwise a header
+function is arbitrary C code: a call to it may modify any memory (but not the
+length of an existing array), and contracts cannot call it. Allocation and
 string literals are rejected inside contracts.
+
+`main` has no callers, so its `@requires` is checked on entry, as `cc0 -d`
+does, rather than assumed.
 
 ### Spec functions
 
-Contracts can call pure functions: functions that neither write memory nor
+Contracts can call pure functions: C0 functions that neither write memory nor
 allocate, directly or through calls. Each pure function that a contract uses
 gets a Boole function that takes the heap maps as extra arguments,
 
@@ -109,8 +114,10 @@ The function body is
   declarations and assignments;
 - a quantifier for the standard search loop. `for (int i = lo; i < hi; i++)
   if (c) return false; return true;` becomes `forall i :: lo <= i < hi ==> !c`,
-  and the dual returning `true` from the loop becomes `exists`. Both `<` and `<=`
-  bounds are recognized, and loop invariants are ignored;
+  and the dual returning `true` from the loop becomes `exists`. Loop invariants
+  are ignored. A `<=` bound is only recognized when it is a literal below
+  `INT_MAX`: `i <= INT_MAX` is always true, so `i` wraps around and the loop
+  visits every int;
 - uninterpreted otherwise. Recursive functions stay uninterpreted: a
   definitional equation for a function that does not terminate could be
   inconsistent, and termination is not checked.
@@ -124,7 +131,8 @@ The function body is
   this mode is verified under the real C0 semantics.
 - `checked`: unbounded integers. Every `+`, `-` and `*` in code gets an overflow
   obligation, so a verified program never overflows and behaves the same as
-  under `bv32`. Contracts are read over mathematical integers. Division is
+  under `bv32`. Arithmetic in contracts gets the same obligations, since
+  contracts wrap at run time too. Division is
   encoded as truncating division; bitwise operators go through `as_bv32`.
 
 In both modes `/` and `%` check for a zero divisor and for `INT_MIN / -1`, and
@@ -185,7 +193,8 @@ Every procedure assumes, through free `requires`, that the heap is well formed:
 references stored in reference-valued maps are NULL or allocated, and the zero
 rows are zero. Reference parameters are NULL or allocated. Procedures that
 change the heap re-establish these facts through free `ensures`, together with
-`nextRef >= old nextRef`. Loops that touch the heap assume them again at the
+`nextRef >= old nextRef` and, since lengths never change, that objects
+allocated before the call keep their lengths. Loops that touch the heap assume them again at the
 top of the body and after the loop. These are assumptions rather than
 obligations because they hold in every reachable C0 state.
 
